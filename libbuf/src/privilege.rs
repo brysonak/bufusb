@@ -154,7 +154,17 @@ fn windows_elevate(args: &[String]) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bufusb.exe"));
-    let cmd_params = format!("/k \"{}\" {}", exe.to_string_lossy(), args.join(" "));
+    // A quote can't appear in a Windows path or a valid --label, so refuse
+    if let Some(bad) = args.iter().find(|a| a.contains('"')) {
+        anyhow::bail!("Fatal: argument contains a double quote, cannot relaunch elevated: {}", bad);
+    }
+    let quoted: Vec<String> = args.iter().map(|a| quote_arg(a)).collect();
+    // cmd /k strips the first and last quote when the line has more than two, so wrap it all once more
+    let cmd_params = format!(
+        "/k \"{} {}\"",
+        quote_arg(&exe.to_string_lossy()),
+        quoted.join(" ")
+    );
 
     eprintln!("  Requesting UAC elevation...\n");
     info!("Requesting UAC elevation for {:?} with args {:?}", exe, args);
@@ -167,7 +177,7 @@ fn windows_elevate(args: &[String]) -> Result<()> {
     let file = to_wide("cmd.exe");
     let param = to_wide(&cmd_params);
 
-    unsafe {
+    let r = unsafe {
         ShellExecuteW(
             None,
             windows::core::PCWSTR(verb.as_ptr()),
@@ -175,8 +185,31 @@ fn windows_elevate(args: &[String]) -> Result<()> {
             windows::core::PCWSTR(param.as_ptr()),
             None,
             SW_SHOW,
-        );
+        )
+    };
+    // <= 32 is failure, 5 (SE_ERR_ACCESSDENIED) is the user clicking No on the UAC prompt
+    if r.0 <= 32 {
+        anyhow::bail!("Fatal: UAC elevation was declined or failed (ShellExecuteW code {})", r.0);
     }
 
     std::process::exit(0);
+}
+
+#[cfg(any(windows, test))]
+fn quote_arg(a: &str) -> String {
+    let trailing = a.len() - a.trim_end_matches('\\').len();
+    format!("\"{}{}\"", a, "\\".repeat(trailing))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote_arg;
+
+    #[test]
+    fn quote_arg_msvcrt() {
+        assert_eq!(quote_arg(r"C:\Users\John Smith\x.iso"), r#""C:\Users\John Smith\x.iso""#);
+        assert_eq!(quote_arg(r"C:\logs\"), r#""C:\logs\\""#);
+        assert_eq!(quote_arg("my usb"), r#""my usb""#);
+        assert_eq!(quote_arg(r"\\.\PhysicalDrive1"), r#""\\.\PhysicalDrive1""#);
+    }
 }

@@ -154,9 +154,15 @@ fn run(cli: Cli) -> Result<()> {
         bail!("Fatal: --log-path and --no-logging cannot be run at the same time. Stopping...");
     }
 
-    let custom_log_path = cli.log_path.as_deref().map(std::path::PathBuf::from);
+    // Absolute before elevation 
+    let custom_log_path = cli
+        .log_path
+        .as_deref()
+        .map(|p| std::env::current_dir().map(|d| d.join(p)))
+        .transpose()
+        .context("Could not resolve --log-path")?;
 
-    let log_path = libbuf::init_logger(!cli.no_logging, cli.verbose, custom_log_path)
+    let log_path = libbuf::init_logger(!cli.no_logging, cli.verbose, custom_log_path.clone())
         .unwrap_or_else(|e| {
             eprintln!("Warning: could not initialise logger: {}", e);
             None
@@ -221,8 +227,8 @@ fn run(cli: Cli) -> Result<()> {
         if cli.offset != 0 {
             argv.extend(["--offset".to_string(), cli.offset.to_string()]);
         }
-        if let Some(ref p) = cli.log_path {
-            argv.extend(["--log-path".to_string(), p.clone()]);
+        if let Some(ref p) = custom_log_path {
+            argv.extend(["--log-path".to_string(), p.to_string_lossy().into_owned()]);
         }
         if let Some(ref l) = cli.label {
             argv.extend(["--label".to_string(), l.clone()]);
