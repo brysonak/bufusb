@@ -1,5 +1,5 @@
 {
-  description = "buf, bootable USB flasher";
+  description = "bufusb, bootable USB flasher";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,20 +13,20 @@
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "buf";
+          pname = "bufusb";
           version = "0.2.3";
           src = self;
 
           cargoLock.lockFile = ./Cargo.lock;
 
-          cargoBuildFlags = [ "--package" "buf" ];
+          cargoBuildFlags = [ "--package" "bufusb" ];
           doCheck = false;
 
           meta = with pkgs.lib; {
             description = "A fast, safe bootable USB image flasher";
-            homepage = "https://github.com/brysonak/buf";
+            homepage = "https://github.com/brysonak/bufusb";
             license = licenses.gpl3Plus;
-            mainProgram = "buf";
+            mainProgram = "bufusb";
           };
         };
 

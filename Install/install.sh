@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-REPO="https://github.com/brysonak/buf.git"
-BIN="buf"
+REPO="https://github.com/brysonak/bufusb.git"
+BIN="bufusb"
 PREFIX="${PREFIX:-/usr/local}"
 INSTALL_DIR="$PREFIX/bin"
 require() {
@@ -20,7 +20,7 @@ case "$(uname -s)" in
 esac
 if [ -f /etc/NIXOS ]; then
     printf 'NixOS detected, use the flake instead:\n' >&2
-    printf '  nix profile install github:brysonak/buf\n' >&2
+    printf '  nix profile install github:brysonak/bufusb\n' >&2
     exit 1
 fi
 require git
@@ -31,7 +31,7 @@ trap 'rm -rf "$CLONE_DIR"' EXIT
 printf 'Cloning %s...\n' "$REPO"
 git clone --depth 1 "$REPO" "$CLONE_DIR"
 cd "$CLONE_DIR"
-cargo build --release --package buf
+cargo build --release --package bufusb
 if [ ! -f "target/release/$BIN" ]; then
     printf 'Error: build failed, target/release/%s not found.\n' "$BIN" >&2
     exit 1

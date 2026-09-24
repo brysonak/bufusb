@@ -267,7 +267,7 @@ struct NtfsMount {
 impl NtfsMount {
     fn mount(node: &Path) -> Result<Self> {
         let mp = std::env::temp_dir().join(format!(
-            "buf-ntfs-{}-{}",
+            "bufusb-ntfs-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

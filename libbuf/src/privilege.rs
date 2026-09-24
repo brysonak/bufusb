@@ -42,8 +42,8 @@ pub fn is_privileged() -> bool {
 }
 
 pub fn elevate_or_warn(args: &[String]) -> Result<()> {
-    warn!("buf must be run as root/Administrator to write to block devices");
-    eprintln!("\n  buf requires elevated privileges to write to block devices.\n");
+    warn!("bufusb must be run as root/Administrator to write to block devices");
+    eprintln!("\n  bufusb requires elevated privileges to write to block devices.\n");
 
     #[cfg(unix)]
     return unix_elevate(args);
@@ -53,14 +53,14 @@ pub fn elevate_or_warn(args: &[String]) -> Result<()> {
 
     #[cfg(not(any(unix, windows)))]
     {
-        eprintln!("  Please re-run buf with administrator/root privileges.");
+        eprintln!("  Please re-run bufusb with administrator/root privileges.");
         std::process::exit(1);
     }
 }
 
 #[cfg(unix)]
 fn unix_elevate(args: &[String]) -> Result<()> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("buf"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bufusb"));
 
     const CANDIDATES: [&str; 4] = ["doas", "sudo", "run0", "pkexec"];
 
@@ -77,7 +77,7 @@ fn unix_elevate(args: &[String]) -> Result<()> {
             Some(c) => c.to_string(),
             None => {
                 eprintln!(
-                    "No escalation tool found (tried {}). Re-run buf as root, or set \
+                    "No escalation tool found (tried {}). Re-run bufusb as root, or set \
                      BUF_SUDO to the one you use.",
                     CANDIDATES.join(", ")
                 );
@@ -153,7 +153,7 @@ fn windows_elevate(args: &[String]) -> Result<()> {
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("buf.exe"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bufusb.exe"));
     let cmd_params = format!("/k \"{}\" {}", exe.to_string_lossy(), args.join(" "));
 
     eprintln!("  Requesting UAC elevation...\n");

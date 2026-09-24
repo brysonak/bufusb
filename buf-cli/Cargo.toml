@@ -1,11 +1,11 @@
 [package]
-name = "buf"
+name = "bufusb"
 version = "0.2.3"
 edition = "2021"
 description = "A fast, safe bootable USB flasher"
 
 [[bin]]
-name = "buf"
+name = "bufusb"
 path = "src/main.rs"
 
 [dependencies]

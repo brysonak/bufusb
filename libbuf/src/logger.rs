@@ -63,9 +63,9 @@ pub fn log_path() -> Option<PathBuf> {
     let now = Local::now();
     // Colons are illegal in Windows filenames
     #[cfg(windows)]
-    let filename = now.format("buf-%m-%d-%y-%H-%M-%S.log").to_string();
+    let filename = now.format("bufusb-%m-%d-%y-%H-%M-%S.log").to_string();
     #[cfg(not(windows))]
-    let filename = now.format("buf-%m-%d-%y-%H:%M:%S.log").to_string();
+    let filename = now.format("bufusb-%m-%d-%y-%H:%M:%S.log").to_string();
     home_dir().map(|d| d.join(filename))
 }
 
@@ -128,7 +128,7 @@ pub fn init(enabled: bool, verbose: bool, custom_path: Option<PathBuf>) -> Resul
         .apply()
         .context("Failed to initialise logger")?;
 
-    log::info!("buf logging started, file: {}", path.display());
+    log::info!("bufusb logging started, file: {}", path.display());
     log::info!("Log level: {}", level);
 
     Ok(Some(path))

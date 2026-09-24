@@ -1262,7 +1262,7 @@ fn unique_mountpoint() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("buf-iso-{}-{}", std::process::id(), n))
+    std::env::temp_dir().join(format!("bufusb-iso-{}-{}", std::process::id(), n))
 }
 
 impl Drop for MountGuard {

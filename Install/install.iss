@@ -2,22 +2,22 @@
 
 [Setup]
 AppId={{5D0F69A8-6A08-440E-AFC6-E809B1B82C88}
-AppName=buf
+AppName=bufusb
 AppVersion={#BufAppVersion}
 AppPublisher=Bryson Kelly
-AppPublisherURL=https://github.com/brysonak/buf
-AppSupportURL=https://github.com/brysonak/buf/issues
-AppUpdatesURL=https://github.com/brysonak/buf/releases
-DefaultDirName={autopf}\buf
-DefaultGroupName=buf
+AppPublisherURL=https://github.com/brysonak/bufusb
+AppSupportURL=https://github.com/brysonak/bufusb/issues
+AppUpdatesURL=https://github.com/brysonak/bufusb/releases
+DefaultDirName={autopf}\bufusb
+DefaultGroupName=bufusb
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 VersionInfoVersion={#BufAppVersion}
 VersionInfoCompany=Bryson Kelly
-VersionInfoDescription=buf bootable USB flasher installer
+VersionInfoDescription=bufusb bootable USB flasher installer
 VersionInfoCopyright=Bryson Kelly
 OutputDir=..\install
-OutputBaseFilename=buf-setup
+OutputBaseFilename=bufusb-setup
 
 Compression=lzma2
 SolidCompression=yes
@@ -37,13 +37,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 
 [Files]
-Source: "..\target\release\buf.exe"; DestDir: "{app}"; DestName: "buf.exe"; Flags: ignoreversion
+Source: "..\target\release\bufusb.exe"; DestDir: "{app}"; DestName: "bufusb.exe"; Flags: ignoreversion
 Source: "..\buf-cli\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 
 [Icons]
-Name: "{group}\buf"; Filename: "{app}\buf.exe"; IconFilename: "{app}\logo.ico"
-Name: "{group}\Uninstall buf"; Filename: "{uninstallexe}"
+Name: "{group}\bufusb"; Filename: "{app}\bufusb.exe"; IconFilename: "{app}\logo.ico"
+Name: "{group}\Uninstall bufusb"; Filename: "{uninstallexe}"
 
 
 [Code]
