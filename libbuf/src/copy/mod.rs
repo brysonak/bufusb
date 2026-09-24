@@ -1069,7 +1069,7 @@ impl Drop for SectorCache<'_> {
 }
 
 #[cfg(target_os = "linux")]
-fn logical_sector_size(path: &Path) -> u64 {
+pub(crate) fn logical_sector_size(path: &Path) -> u64 {
     use std::os::unix::io::AsRawFd;
     // BLKSSZGET returns the logical sector size
     const BLKSSZGET: u64 = 0x1268;
@@ -1078,7 +1078,7 @@ fn logical_sector_size(path: &Path) -> u64 {
         Err(_) => return 512,
     };
     let mut size: std::os::raw::c_int = 0;
-    let ret = unsafe { ss_ioctl(f.as_raw_fd(), BLKSSZGET, &mut size as *mut _) };
+    let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), BLKSSZGET as _, &mut size as *mut _) };
     if ret == 0 && size > 0 {
         size as u64
     } else {
@@ -1086,14 +1086,8 @@ fn logical_sector_size(path: &Path) -> u64 {
     }
 }
 
-#[cfg(target_os = "linux")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn ss_ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
-}
-
 #[cfg(target_os = "macos")]
-fn logical_sector_size(path: &Path) -> u64 {
+pub(crate) fn logical_sector_size(path: &Path) -> u64 {
     use std::os::unix::io::AsRawFd;
     const DKIOCGETBLOCKSIZE: u64 = 0x40046418;
     let f = match File::open(path) {
@@ -1101,7 +1095,7 @@ fn logical_sector_size(path: &Path) -> u64 {
         Err(_) => return 512,
     };
     let mut size: u32 = 0;
-    let ret = unsafe { ss_ioctl_mac(f.as_raw_fd(), DKIOCGETBLOCKSIZE, &mut size as *mut _) };
+    let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), DKIOCGETBLOCKSIZE as _, &mut size as *mut _) };
     if ret == 0 && size > 0 {
         size as u64
     } else {
@@ -1109,14 +1103,8 @@ fn logical_sector_size(path: &Path) -> u64 {
     }
 }
 
-#[cfg(target_os = "macos")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn ss_ioctl_mac(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
-}
-
 #[cfg(windows)]
-fn logical_sector_size(path: &Path) -> u64 {
+pub(crate) fn logical_sector_size(path: &Path) -> u64 {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
@@ -1169,7 +1157,7 @@ fn logical_sector_size(path: &Path) -> u64 {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn logical_sector_size(_path: &Path) -> u64 {
+pub(crate) fn logical_sector_size(_path: &Path) -> u64 {
     512
 }
 
@@ -1297,13 +1285,13 @@ impl Drop for MountGuard {
 }
 
 
-struct PrepGuard {
+pub(crate) struct PrepGuard {
     #[cfg(windows)]
     locked: Vec<File>,
 }
 
 #[cfg(target_os = "linux")]
-fn prepare_target(target: &Path) -> Result<PrepGuard> {
+pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
     use std::process::Command;
     // unmounts partitions of this device, matches /dev/sdb1 or nvme0n1p2 style suffixes not a bare prefix, a failed unmount is fatal since a new GPT under a live fs corrupts it
     let t = target.to_string_lossy().to_string();
@@ -1343,8 +1331,14 @@ fn is_partition_of(cand: &str, dev: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn prepare_target(target: &Path) -> Result<PrepGuard> {
+pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
+    use std::os::unix::fs::FileTypeExt;
     use std::process::Command;
+    // dd into a plain image file has nothing to unmount, and unmountDisk would fail on it
+    let ft = std::fs::metadata(target)?.file_type();
+    if !ft.is_block_device() && !ft.is_char_device() {
+        return Ok(PrepGuard {});
+    }
     let ok = Command::new("diskutil")
         .arg("unmountDisk")
         .arg(target)
@@ -1362,7 +1356,7 @@ fn prepare_target(target: &Path) -> Result<PrepGuard> {
 }
 
 #[cfg(windows)]
-fn prepare_target(target: &Path) -> Result<PrepGuard> {
+pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
     // locks and dismounts every volume on this drive, holding handles open so they persist through the writes, 
     // windows rejects raw writes under a mounted volume otherwise, best effort since a failed lock just warns
     let drive_no = match physical_drive_number(target) {
@@ -1581,7 +1575,7 @@ fn reread_partitions(dev: &File, _target: &Path) {
     // EBUSY usually means udev or a lingering opener still holds the disk for
     // a moment after our writes. it settles quickly, so retry briefly
     for attempt in 0..5 {
-        let ret = unsafe { rr_ioctl(dev.as_raw_fd(), BLKRRPART) };
+        let ret = unsafe { nix::libc::ioctl(dev.as_raw_fd(), BLKRRPART as _) };
         if ret == 0 {
             return;
         }
@@ -1597,12 +1591,6 @@ fn reread_partitions(dev: &File, _target: &Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-}
-
-#[cfg(target_os = "linux")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn rr_ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
 }
 
 #[cfg(windows)]

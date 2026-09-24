@@ -183,13 +183,12 @@ fn block_device_size(path: &Path) -> Result<u64> {
     use std::os::unix::io::AsRawFd;
 
     let f = File::open(path)?;
-    let fd = f.as_raw_fd();
 
     // BLKGETSIZE64 returns device size in bytes. BLKGETSIZE returns 512-byte sector count
     const BLKGETSIZE64: u64 = 0x80081272;
 
     let mut size: u64 = 0;
-    let ret = unsafe { ioctl(fd, BLKGETSIZE64, &mut size as *mut u64) };
+    let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), BLKGETSIZE64 as _, &mut size as *mut u64) };
     if ret == 0 {
         debug!("BLKGETSIZE64 returned {} bytes for {}", size, path.display());
         return Ok(size);
@@ -202,11 +201,6 @@ fn block_device_size(path: &Path) -> Result<u64> {
     use std::io::{Seek, SeekFrom};
     let mut f = File::open(path)?;
     Ok(f.seek(SeekFrom::End(0))?)
-}
-
-#[cfg(target_os = "linux")]
-extern "C" {
-    fn ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
 }
 
 // On macOS, use DKIOCGETBLOCKCOUNT + DKIOCGETBLOCKSIZE ioctls for block devices
@@ -225,8 +219,8 @@ fn block_device_size(path: &Path) -> Result<u64> {
     let mut block_count: u64 = 0;
     let mut block_size: u32 = 0;
 
-    let r1 = unsafe { macos_ioctl(fd, DKIOCGETBLOCKCOUNT, &mut block_count as *mut u64) };
-    let r2 = unsafe { macos_ioctl(fd, DKIOCGETBLOCKSIZE, &mut block_size as *mut u32) };
+    let r1 = unsafe { nix::libc::ioctl(fd, DKIOCGETBLOCKCOUNT as _, &mut block_count as *mut u64) };
+    let r2 = unsafe { nix::libc::ioctl(fd, DKIOCGETBLOCKSIZE as _, &mut block_size as *mut u32) };
 
     if r1 == 0 && r2 == 0 && block_size > 0 {
         return Ok(block_count * block_size as u64);
@@ -235,13 +229,6 @@ fn block_device_size(path: &Path) -> Result<u64> {
     use std::io::{Seek, SeekFrom};
     let mut f = File::open(path)?;
     Ok(f.seek(SeekFrom::End(0))?)
-}
-
-// ioctl on macOS takes an unsigned long request, which is u64 on x86_64/arm64
-#[cfg(target_os = "macos")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn macos_ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
 }
 
 #[cfg(windows)]
@@ -345,7 +332,8 @@ fn open_target_file(path: &Path) -> anyhow::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     Ok(OpenOptions::new()
         .write(true)
-        .custom_flags(linux_flags::O_DIRECT | linux_flags::O_SYNC)
+        // O_DIRECT differs per arch (0x4000 on x86 is O_DIRECTORY on arm64), take it from libc
+        .custom_flags(nix::libc::O_DIRECT | nix::libc::O_SYNC)
         .open(path)?)
 }
 
@@ -378,10 +366,4 @@ fn macos_set_nocache(file: &File) {
 extern "C" {
     #[link_name = "fcntl"]
     fn libc_fcntl(fd: std::os::raw::c_int, cmd: std::os::raw::c_int, ...) -> std::os::raw::c_int;
-}
-
-#[cfg(target_os = "linux")]
-mod linux_flags {
-    pub const O_DIRECT: i32 = 0x4000;
-    pub const O_SYNC: i32 = 0x101000;
 }

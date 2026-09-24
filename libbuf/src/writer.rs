@@ -41,6 +41,11 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     let mut source_file = File::open(source_path)
         .with_context(|| format!("Failed to open source: {}", params.source))?;
 
+    // Unmount (unix) or lock + dismount (windows) the target's volumes, held until return
+    // Windows rejects raw writes inside a mounted volume after the first MiB already landed,
+    // on unix a live fs writes its dirty metadata back over the image
+    let _prep = crate::copy::prepare_target(Path::new(&params.target))?;
+
     // Query physical sector size for alignment. With O_DIRECT / FILE_FLAG_NO_BUFFERING,
     // every write must be a multiple of this size in length and start on an aligned offset
     let sector_size = get_sector_size(Path::new(&params.target));
@@ -280,63 +285,10 @@ fn get_sector_size(path: &Path) -> usize {
     }
 }
 
-#[cfg(target_os = "linux")]
+// O_DIRECT needs logical sector alignment (F_NOCACHE needs none), copy mode already queries it
+#[cfg(not(windows))]
 fn get_sector_size(path: &Path) -> usize {
-    use std::os::unix::io::AsRawFd;
-
-    // BLKSSZGET returns the logical sector size
-    // For most USB drives this is 512; for 4Kn drives it is 4096
-    const BLKSSZGET: u64 = 0x1268;
-
-    let f = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return 512,
-    };
-
-    let mut size: std::os::raw::c_int = 0;
-    let ret = unsafe { sector_ioctl(f.as_raw_fd(), BLKSSZGET, &mut size as *mut _) };
-    if ret == 0 && size > 0 {
-        size as usize
-    } else {
-        512
-    }
-}
-
-#[cfg(target_os = "linux")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn sector_ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
-}
-
-#[cfg(target_os = "macos")]
-fn get_sector_size(path: &Path) -> usize {
-    use std::os::unix::io::AsRawFd;
-
-    const DKIOCGETBLOCKSIZE: u64 = 0x40046418;
-
-    let f = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return 512,
-    };
-
-    let mut size: u32 = 0;
-    let ret = unsafe { macos_sector_ioctl(f.as_raw_fd(), DKIOCGETBLOCKSIZE, &mut size as *mut _) };
-    if ret == 0 && size > 0 {
-        size as usize
-    } else {
-        512
-    }
-}
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    #[link_name = "ioctl"]
-    fn macos_sector_ioctl(fd: std::os::raw::c_int, request: u64, ...) -> std::os::raw::c_int;
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn get_sector_size(_path: &Path) -> usize {
-    512
+    crate::copy::logical_sector_size(path) as usize
 }
 
 #[cfg(unix)]
