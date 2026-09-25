@@ -1,5 +1,5 @@
 /*
-    buf - Tool for flashing USB drives across platforms
+    bufusb - Tool for flashing USB drives across platforms
     Copyright (C) 2026 Bryson Kelly
 
     This program is free software: you can redistribute it and/or modify
