@@ -171,7 +171,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
             println!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
         }
     }
-    io.flush().ok();
+    io.flush().context("Flushing cached sectors to the device failed")?;
     // release the cache's borrow of dev before we touch dev directly
     drop(io);
     pb.finish_with_message("Copied");

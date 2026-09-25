@@ -124,7 +124,6 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     let pb = build_bar(scan.total_bytes);
     let (skipped, extracted_boot) =
         format_and_copy(target_path, mroot, Path::new(source), !scan.has_efi_boot, &pb, label)?;
-    pb.finish_with_message("Done");
 
     if skipped > 0 {
         println!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
@@ -244,6 +243,13 @@ fn format_and_copy(
             Err(e) => warn!("El-Torito extraction failed: {:#}", e),
         }
     }
+
+    pb.finish_with_message("Copied");
+    println!("Syncing to device, all data is still being written, do not unplug...");
+    mount.unmount()?;
+    File::open(&part_node)
+        .and_then(|f| f.sync_all())
+        .with_context(|| format!("Final sync of {} failed", part_node.display()))?;
     Ok((skipped, extracted))
 }
 
@@ -269,6 +275,7 @@ fn wait_for_node(node: &Path) -> Result<()> {
 #[cfg(target_os = "linux")]
 struct NtfsMount {
     mount_point: PathBuf,
+    mounted: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -309,18 +316,37 @@ impl NtfsMount {
                 node.display()
             );
         }
-        Ok(Self { mount_point: mp })
+        Ok(Self { mount_point: mp, mounted: true })
     }
 
     fn mount_point(&self) -> &Path {
         &self.mount_point
+    }
+
+    fn unmount(mut self) -> Result<()> {
+        self.mounted = false;
+        let st = Command::new("umount")
+            .arg(&self.mount_point)
+            .status()
+            .context("failed to run umount")?;
+        if !st.success() {
+            bail!(
+                "Fatal: umount {} exited with {}, data may not be fully written. \
+                 Unmount it manually before unplugging",
+                self.mount_point.display(),
+                st
+            );
+        }
+        Ok(())
     }
 }
 
 #[cfg(target_os = "linux")]
 impl Drop for NtfsMount {
     fn drop(&mut self) {
-        let _ = Command::new("umount").arg(&self.mount_point).status();
+        if self.mounted {
+            let _ = Command::new("umount").arg(&self.mount_point).status();
+        }
         let _ = std::fs::remove_dir(&self.mount_point);
     }
 }
@@ -363,6 +389,7 @@ fn format_and_copy(
         .trim()
         .chars()
         .next()
+        .filter(|c| c.is_ascii_alphabetic())
         .ok_or_else(|| anyhow::anyhow!("could not determine the assigned drive letter"))?;
     let mp = PathBuf::from(format!("{}:\\", letter));
 
@@ -373,6 +400,21 @@ fn format_and_copy(
             Ok(found) => extracted = found,
             Err(e) => warn!("El-Torito extraction failed: {:#}", e),
         }
+    }
+
+    pb.finish_with_message("Copied");
+    println!("Syncing to device, all data is still being written, do not unplug...");
+    let st = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("$ErrorActionPreference='Stop'; Write-VolumeCache -DriveLetter {}", letter),
+        ])
+        .status()
+        .context("failed to run Write-VolumeCache")?;
+    if !st.success() {
+        bail!("Fatal: flushing {}: failed, data may not be fully written. Eject it before unplugging", letter);
     }
 
     Ok((skipped, extracted))
