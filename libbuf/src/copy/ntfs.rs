@@ -110,8 +110,16 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
 
     dev.sync_data().context("Sync of GPT + loader to device failed")?;
     drop(prep);
-    reread_partitions(&dev, target_path);
+    let reread = reread_partitions(&dev, target_path);
     drop(dev);
+    if !reread && cfg!(target_os = "linux") {
+        bail!(
+            "Fatal: the kernel did not re-read {}'s new partition table, refusing to format a \
+             stale partition. Close anything using the drive (file manager, mounted \
+             partition) and retry",
+            target
+        );
+    }
 
     let pb = build_bar(scan.total_bytes);
     let (skipped, extracted_boot) =

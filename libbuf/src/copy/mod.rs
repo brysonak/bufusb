@@ -1566,7 +1566,7 @@ fn open_target_buffered(path: &Path) -> Result<File> {
 }
 
 #[cfg(target_os = "linux")]
-fn reread_partitions(dev: &File, _target: &Path) {
+fn reread_partitions(dev: &File, _target: &Path) -> bool {
     use std::os::unix::io::AsRawFd;
     // Do not trust reddit as a source for anything. Kept getting BLKRRPART errors because this constant was wong
     // FUCK REDDIT
@@ -1577,7 +1577,7 @@ fn reread_partitions(dev: &File, _target: &Path) {
     for attempt in 0..5 {
         let ret = unsafe { nix::libc::ioctl(dev.as_raw_fd(), BLKRRPART as _) };
         if ret == 0 {
-            return;
+            return true;
         }
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(EBUSY) || attempt == 4 {
@@ -1587,14 +1587,15 @@ fn reread_partitions(dev: &File, _target: &Path) {
                  to see the new partition table",
                 err
             );
-            return;
+            return false;
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
+    false
 }
 
 #[cfg(windows)]
-fn reread_partitions(dev: &File, _target: &Path) {
+fn reread_partitions(dev: &File, _target: &Path) -> bool {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Ioctl::IOCTL_DISK_UPDATE_PROPERTIES;
@@ -1617,15 +1618,19 @@ fn reread_partitions(dev: &File, _target: &Path) {
     if ok.is_err() {
         warn!("IOCTL_DISK_UPDATE_PROPERTIES failed; Explorer may not see the new partition");
     }
+    ok.is_ok()
 }
 
 #[cfg(target_os = "macos")]
-fn reread_partitions(_dev: &File, _target: &Path) {
+fn reread_partitions(_dev: &File, _target: &Path) -> bool {
     // diskutil re-scans on its own once our handle closes; nothing to do
+    true
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn reread_partitions(_dev: &File, _target: &Path) {}
+fn reread_partitions(_dev: &File, _target: &Path) -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
