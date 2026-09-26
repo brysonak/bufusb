@@ -212,6 +212,12 @@ fn run(cli: Cli) -> Result<()> {
         }
     };
 
+    #[cfg(unix)]
+    let target = std::fs::canonicalize(&target)
+        .with_context(|| format!("Could not resolve target path: {}", target))?
+        .to_string_lossy()
+        .into_owned();
+
     if !libbuf::is_privileged() {
         warn!("Not running as root/Administrator");
         let mut argv = vec![
