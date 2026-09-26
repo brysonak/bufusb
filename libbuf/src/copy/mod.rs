@@ -767,7 +767,7 @@ fn write_gpt<D: Write + Seek>(
     pmbr[510] = 0x55;
     pmbr[511] = 0xAA;
 
-    // lay it all down
+    gpt_write_at(dev, 0, &vec![0u8; (first_lba * sector) as usize], sector)?;
     gpt_write_at(dev, 0, &pmbr, sector)?;
     gpt_write_at(dev, primary_hdr_lba, &pad_sector(&primary, sector), sector)?;
     gpt_write_at(dev, primary_arr_lba, &array, sector)?;
@@ -1701,8 +1701,11 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("buf-gpt-test-{}-{}.img", std::process::id(), sector));
         {
-            let f = File::create(&path).unwrap();
+            let mut f = File::create(&path).unwrap();
             f.set_len(total_sectors * sector).unwrap();
+            // leftover ISO9660 PVD from an earlier dd, must not survive
+            f.seek(SeekFrom::Start(0x8001)).unwrap();
+            f.write_all(b"CD001").unwrap();
         }
         let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
         write_gpt(&mut f, total_sectors, part_start, sector, &[PartSpec {
@@ -1718,6 +1721,11 @@ mod tests {
             f.read_exact(&mut b).unwrap();
             b
         };
+
+        let mut old_pvd = [0u8; 5];
+        f.seek(SeekFrom::Start(0x8001)).unwrap();
+        f.read_exact(&mut old_pvd).unwrap();
+        assert_eq!(old_pvd, [0; 5], "stale ISO signature before the partition was not wiped");
 
         let pmbr = read_lba(&mut f, 0);
         assert_eq!(pmbr[450], 0xEE, "protective MBR partition type");
