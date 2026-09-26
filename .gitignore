@@ -1,5 +1,6 @@
 /target
-bufusb-setup.exe
+# Don't know why I didn't do this in the first place
+*.exe
 
 
 # fuck NixOS
