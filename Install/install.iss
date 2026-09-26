@@ -1,4 +1,4 @@
-#define BufAppVersion "0.2.3"
+#define BufAppVersion "0.2.4"
 
 [Setup]
 AppId={{5D0F69A8-6A08-440E-AFC6-E809B1B82C88}

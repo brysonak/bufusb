@@ -25,8 +25,8 @@ use log::{debug, error, info, warn};
 #[derive(Parser, Debug)]
 #[command(
     name       = "bufusb",
-    version    = "0.2.3",
-    long_version = "0.2.3\n Copyright (C) 2026  Bryson Kelly\n    This program comes with ABSOLUTELY NO WARRANTY; for details, visit: https://github.com/brysonak/bufusb/blob/main/LICENSE\n    This is free software, and you are welcome to redistribute it\n    under certain conditions.",
+    version    = "0.2.4",
+    long_version = "0.2.4\n Copyright (C) 2026  Bryson Kelly\n    This program comes with ABSOLUTELY NO WARRANTY; for details, visit: https://github.com/brysonak/bufusb/blob/main/LICENSE\n    This is free software, and you are welcome to redistribute it\n    under certain conditions.",
     author     = "Bryson Kelly",
     about      = "A fast, safe bootable USB image flasher",
     long_about = None,

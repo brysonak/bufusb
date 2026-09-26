@@ -1,6 +1,6 @@
 [package]
 name = "libbuf"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 publish = false
 description = "Core logic library for the buf USB flasher tool"
