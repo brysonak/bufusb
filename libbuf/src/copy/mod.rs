@@ -1218,11 +1218,20 @@ impl MountGuard {
 impl MountGuard {
     fn mount(source: &Path) -> Result<Self> {
         use std::process::Command;
+        let img = ps_quote(&source.to_string_lossy());
         let ps = format!(
             "$ErrorActionPreference='Stop'; \
-             $v = (Mount-DiskImage -ImagePath '{}' -PassThru | Get-Volume).DriveLetter; \
-             Write-Output $v",
-            source.display()
+             try {{ Dismount-DiskImage -ImagePath {img} | Out-Null }} catch {{}}; \
+             Mount-DiskImage -ImagePath {img} -NoDriveLetter | Out-Null; \
+             for ($i = 0; $i -lt 60; $i++) {{ \
+                 $v = Get-DiskImage -ImagePath {img} | Get-Volume -ErrorAction SilentlyContinue; \
+                 if ($v.Path) {{ break }}; Start-Sleep -Milliseconds 250 \
+             }}; \
+             if (-not $v.Path) {{ \
+                 Dismount-DiskImage -ImagePath {img} | Out-Null; \
+                 throw 'the mounted image never exposed a volume' \
+             }}; \
+             Write-Output $v.Path"
         );
         let out = Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
@@ -1234,14 +1243,28 @@ impl MountGuard {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        let letter = String::from_utf8_lossy(&out.stdout)
-            .trim()
-            .chars()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("could not determine mounted drive letter"))?;
-        let mp = PathBuf::from(format!("{}:\\", letter));
-        Ok(Self { mount_point: mp, source: source.to_path_buf() })
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let vol = stdout
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with(r"\\?\Volume{"))
+            .ok_or_else(|| anyhow::anyhow!("could not determine the mounted volume path"))?;
+        Ok(Self { mount_point: PathBuf::from(vol), source: source.to_path_buf() })
     }
+}
+
+#[cfg(any(windows, test))]
+fn ps_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1273,8 +1296,8 @@ impl Drop for MountGuard {
         {
             // dismount echoes its DiskImage object to the inherited console otherwise
             let ps = format!(
-                "Dismount-DiskImage -ImagePath '{}' | Out-Null",
-                self.source.display()
+                "Dismount-DiskImage -ImagePath {} | Out-Null",
+                ps_quote(&self.source.to_string_lossy())
             );
             let _ = Command::new("powershell")
                 .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
@@ -1565,6 +1588,9 @@ fn open_target_buffered(path: &Path) -> Result<File> {
     }
 }
 
+// Returns whether the kernel/OS picked up the new table. Copy mode only needs it for the
+// desktop to show the partition, the NTFS path formats partition 1 by node and must not
+// run against the old table's extent
 #[cfg(target_os = "linux")]
 fn reread_partitions(dev: &File, _target: &Path) -> bool {
     use std::os::unix::io::AsRawFd;
@@ -1730,6 +1756,14 @@ mod tests {
 
         drop(f);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ps_quote_escapes_all_single_quote_forms() {
+        assert_eq!(ps_quote(r"C:\isos\arch.iso"), r"'C:\isos\arch.iso'");
+        assert_eq!(ps_quote(r"C:\Users\O'Brien\x.iso"), r"'C:\Users\O''Brien\x.iso'");
+        assert_eq!(ps_quote("a\u{2019}b"), "'a\u{2019}\u{2019}b'");
+        assert_eq!(ps_quote("'; rm C:\\ #"), "'''; rm C:\\ #'");
     }
 
     #[test]
