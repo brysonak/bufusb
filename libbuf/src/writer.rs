@@ -19,9 +19,9 @@
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Instant;
 
@@ -78,8 +78,7 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     let start = Instant::now();
 
     loop {
-        let bytes_read = source_file
-            .read(buffer.as_mut_slice_n(aligned_block))
+        let bytes_read = read_full(&mut source_file, buffer.as_mut_slice_n(aligned_block))
             .context("Read error from source")?;
 
         if bytes_read == 0 {
@@ -201,8 +200,9 @@ impl DirectWriter {
         self.file.seek(pos).map_err(Into::into)
     }
 
+    // fdatasync on unix, FlushFileBuffers on windows
     fn sync(self) -> Result<()> {
-        sync_to_device(self.file)
+        self.file.sync_data().map_err(Into::into)
     }
 }
 
@@ -291,40 +291,51 @@ fn get_sector_size(path: &Path) -> usize {
     crate::copy::logical_sector_size(path) as usize
 }
 
-#[cfg(unix)]
-fn sync_to_device(file: File) -> Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let fd = file.as_raw_fd();
-    let ret = unsafe { unix_fdatasync(fd) };
-    if ret != 0 {
-        warn!("fdatasync returned non-zero ({}); data may not be fully flushed", ret);
+fn read_full<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
     }
-    Ok(())
+    Ok(n)
 }
 
-#[cfg(unix)]
-extern "C" {
-    #[link_name = "fdatasync"]
-    fn unix_fdatasync(fd: std::os::raw::c_int) -> std::os::raw::c_int;
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(windows)]
-fn sync_to_device(file: File) -> Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::FlushFileBuffers;
-
-    let handle = HANDLE(file.as_raw_handle() as isize);
-    let ok = unsafe { FlushFileBuffers(handle) };
-    drop(file);
-    if ok.is_err() {
-        warn!("FlushFileBuffers failed; data may not be fully written to device");
+    struct Trickle<'a> {
+        data: &'a [u8],
+        interrupted: bool,
     }
-    Ok(())
-}
 
-#[cfg(not(any(unix, windows)))]
-fn sync_to_device(_file: File) -> Result<()> {
-    warn!("Platform sync not implemented, data flush not guaranteed");
-    Ok(())
+    impl Read for Trickle<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let n = buf.len().min(3).min(self.data.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn read_full_fills_across_short_reads_and_eintr() {
+        let data: Vec<u8> = (0..20).collect();
+        let mut r = Trickle { data: &data, interrupted: false };
+        let mut buf = [0u8; 8];
+        assert_eq!(read_full(&mut r, &mut buf).unwrap(), 8);
+        assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(read_full(&mut r, &mut buf).unwrap(), 8);
+        assert_eq!(read_full(&mut r, &mut buf).unwrap(), 4); // EOF mid block
+        assert_eq!(&buf[..4], &[16, 17, 18, 19]);
+        assert_eq!(read_full(&mut r, &mut buf).unwrap(), 0);
+    }
 }
