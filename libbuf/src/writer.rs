@@ -220,7 +220,7 @@ fn build_progress_bar(total_bytes: u64) -> ProgressBar {
 }
 
 #[cfg(windows)]
-fn get_sector_size(path: &Path) -> usize {
+pub(crate) fn get_sector_size(path: &Path) -> usize {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
@@ -287,7 +287,7 @@ fn get_sector_size(path: &Path) -> usize {
 
 // O_DIRECT needs logical sector alignment (F_NOCACHE needs none), copy mode already queries it
 #[cfg(not(windows))]
-fn get_sector_size(path: &Path) -> usize {
+pub(crate) fn get_sector_size(path: &Path) -> usize {
     crate::copy::logical_sector_size(path) as usize
 }
 
@@ -308,6 +308,7 @@ fn read_full<R: Read + ?Sized>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
 mod tests {
     use super::*;
 
+    // Hands out 3 bytes per call and throws one EINTR
     struct Trickle<'a> {
         data: &'a [u8],
         interrupted: bool,

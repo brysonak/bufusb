@@ -44,6 +44,17 @@ pub fn validate(params: &WriteParams) -> Result<(u64, File)> {
         bail!("Block size {} is unreasonably large (max 256 MiB)", params.block_size);
     }
 
+    if params.offset != 0 {
+        let sector = crate::writer::get_sector_size(Path::new(&params.target)) as u64;
+        if params.offset % sector != 0 {
+            bail!(
+                "--offset {} is not a multiple of the target's {}-byte sector size",
+                params.offset,
+                sector
+            );
+        }
+    }
+
     let source_size = check_source(Path::new(&params.source))?;
     let target_file = open_target_and_check(Path::new(&params.target), source_size, params.offset)?;
 
