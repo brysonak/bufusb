@@ -1,4 +1,16 @@
 #define BufAppVersion "0.2.4"
+#ifndef Arch
+  #define Arch "x64"
+#endif
+#if Arch == "arm64"
+  #define ExeSrc "..\target\aarch64-pc-windows-msvc\release\bufusb.exe"
+  #define ArchId "arm64"
+#elif Arch == "x64"
+  #define ExeSrc "..\target\release\bufusb.exe"
+  #define ArchId "x64compatible"
+#else
+  #error Arch must be x64 or arm64
+#endif
 
 [Setup]
 AppId={{5D0F69A8-6A08-440E-AFC6-E809B1B82C88}
@@ -17,14 +29,15 @@ VersionInfoCompany=Bryson Kelly
 VersionInfoDescription=bufusb bootable USB flasher installer
 VersionInfoCopyright=Bryson Kelly
 OutputDir=..\install
-OutputBaseFilename=bufusb-setup
+OutputBaseFilename=bufusb-setup-{#BufAppVersion}-{#Arch}
 
 Compression=lzma2
 SolidCompression=yes
 
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#ArchId}
+ArchitecturesInstallIn64BitMode={#ArchId}
 
 ChangesEnvironment=yes
 WizardStyle=modern
@@ -37,7 +50,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 
 [Files]
-Source: "..\target\release\bufusb.exe"; DestDir: "{app}"; DestName: "bufusb.exe"; Flags: ignoreversion
+Source: "{#ExeSrc}"; DestDir: "{app}"; DestName: "bufusb.exe"; Flags: ignoreversion
 Source: "..\buf-cli\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 

@@ -2,6 +2,8 @@
 # Don't know why I didn't do this in the first place
 *.exe
 
+*.tsk
+
 
 # fuck NixOS
 result 
