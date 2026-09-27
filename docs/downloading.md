@@ -6,9 +6,13 @@ PREREQUISITES (non-Windows):
 
 ## Linux and macOS
 
-**THE PACKAGE ON THE AUR IS IN THE MIDDLE OF BEING RENAMED. Please standby**
+**Arch Users**:
+bufusb is available on the AUR.
+```bash
+yay -S bufusb-cli
+```
 
-**Linux and macOS**:
+**Other Distributions and macOS**:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/brysonak/bufusb/refs/heads/main/Install/install.sh | sh
 ```
