@@ -1,0 +1,65 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,    os: ubuntu-24.04,     target: x86_64-unknown-linux-musl,  test: true }
+          - { name: linux-aarch64,   os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, test: true }
+          - { name: windows-x86_64,  os: windows-latest,   target: x86_64-pc-windows-msvc,     test: true,  arch: x64 }
+          - { name: windows-aarch64, os: windows-latest,   target: aarch64-pc-windows-msvc,    test: false, arch: arm64 }
+          - { name: macos-x86_64,    os: macos-latest,     target: x86_64-apple-darwin,        test: false }
+          - { name: macos-aarch64,   os: macos-latest,     target: aarch64-apple-darwin,       test: true }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Test
+        if: matrix.test
+        run: cargo test --workspace --locked --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p bufusb --target ${{ matrix.target }}
+
+      - name: Build installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          # install.iss reads the x64 build from target\release
+          if ("${{ matrix.arch }}" -eq "x64") {
+            New-Item -ItemType Directory -Force target\release | Out-Null
+            Copy-Item target\${{ matrix.target }}\release\bufusb.exe target\release\
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DArch=${{ matrix.arch }}" Install\install.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bufusb-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/bufusb${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: bufusb-setup-${{ matrix.name }}
+          path: install/*.exe
+          if-no-files-found: error
