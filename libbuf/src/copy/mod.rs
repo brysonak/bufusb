@@ -64,6 +64,8 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
         bail!("Fatal: Target {} is too small for a FAT32 partition", target);
     }
     let part_sectors = total_sectors - align_lba - gpt_tail;
+    let part_bytes = part_sectors * sector;
+    let cluster = fat32_cluster(part_bytes, sector);
 
     // Mount the ISO
     let guard = MountGuard::mount(Path::new(source))
@@ -71,7 +73,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     let mroot = guard.mount_point().to_path_buf();
     info!("Mounted {} at {}", source, mroot.display());
 
-    let scan = scan_tree(&mroot)?;
+    let scan = scan_tree(&mroot, cluster)?;
     info!(
         "copy: {} across {} files, largest {}, efi_boot={}",
         human_bytes(scan.total_bytes),
@@ -83,6 +85,14 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     if scan.max_file > FAT32_MAX_FILE {
         return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label);
     }
+
+    // 8 reserved sectors, 2 FATs at 4 bytes per cluster, the root dir cluster
+    let fat_overhead = 8 * sector + 2 * 4 * (part_bytes / cluster) + cluster;
+    ensure_fits(
+        scan.alloc_bytes + (scan.file_count + scan.dir_count) * 128 + fat_overhead,
+        part_bytes,
+        target,
+    )?;
 
     if label.len() > 11 {
         let short = String::from_utf8_lossy(&fat_label(&label)).trim_end().to_string();
@@ -140,6 +150,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
             FormatVolumeOptions::new()
                 .fat_type(FatType::Fat32)
                 .bytes_per_sector(sector as u16)
+                .bytes_per_cluster(cluster as u32)
                 .volume_label(fat_label(&label)),
         )
         .map_err(|e| anyhow::anyhow!("FAT32 format failed: {}", e))?;
@@ -203,9 +214,32 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
 
 struct Scan {
     total_bytes: u64,
+    alloc_bytes: u64,
     max_file: u64,
     file_count: u64,
+    dir_count: u64,
     has_efi_boot: bool,
+}
+
+fn fat32_cluster(part_bytes: u64, sector: u64) -> u64 {
+    let c = match part_bytes {
+        b if b <= 260 << 20 => 512,
+        b if b <= 8 << 30 => 4096,
+        b => b.next_power_of_two() / (2 << 30) * 1024,
+    };
+    c.clamp(sector, 32 * 1024)
+}
+
+fn ensure_fits(needed: u64, avail: u64, target: &str) -> Result<()> {
+    if needed > avail {
+        bail!(
+            "Fatal: the ISO's files need about {} but {} only has {} usable. Use a bigger drive.",
+            human_bytes(needed),
+            target,
+            human_bytes(avail)
+        );
+    }
+    Ok(())
 }
 
 
@@ -249,11 +283,13 @@ fn oversized_file_fallback(
     }
 }
 
-fn scan_tree(root: &Path) -> Result<Scan> {
+fn scan_tree(root: &Path, cluster: u64) -> Result<Scan> {
     let mut s = Scan {
         total_bytes: 0,
+        alloc_bytes: 0,
         max_file: 0,
         file_count: 0,
+        dir_count: 0,
         has_efi_boot: false,
     };
     let mut stack = vec![root.to_path_buf()];
@@ -268,12 +304,15 @@ fn scan_tree(root: &Path) -> Result<Scan> {
                 Err(_) => continue,
             };
             if ft.is_dir() {
+                s.dir_count += 1;
+                s.alloc_bytes += cluster;
                 stack.push(p);
                 continue;
             }
             // file, or symlink that resolves to a file
             let len = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
             s.total_bytes += len;
+            s.alloc_bytes += len.div_ceil(cluster) * cluster;
             s.file_count += 1;
             if len > s.max_file {
                 s.max_file = len;
@@ -1380,8 +1419,6 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
 
 #[cfg(windows)]
 pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
-    // locks and dismounts every volume on this drive, holding handles open so they persist through the writes, 
-    // windows rejects raw writes under a mounted volume otherwise, best effort since a failed lock just warns
     let drive_no = match physical_drive_number(target) {
         Some(n) => n,
         None => {
@@ -1390,18 +1427,30 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
         }
     };
 
+    // Explorer and AV scanners grab a handle for a moment after plug in or dismount, so retry before giving up
+    const LOCK_TRIES: u32 = 10;
     let mut locked = Vec::new();
     for vol in enumerate_volumes() {
         if volume_drive_number(&vol) != Some(drive_no) {
             continue;
         }
-        match lock_and_dismount(&vol) {
-            Some(h) => {
-                info!("Locked + dismounted volume {} on drive {}", vol, drive_no);
-                locked.push(h);
-            }
-            None => warn!("Could not lock volume {} on drive {}; continuing", vol, drive_no),
-        }
+        let h = (0..LOCK_TRIES)
+            .find_map(|i| {
+                if i > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                lock_and_dismount(&vol)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Fatal: could not lock volume {} on drive {}, it is still in use (open Explorer \
+                     window or file, or it is the system disk). Close whatever is using it and retry.",
+                    vol,
+                    drive_no
+                )
+            })?;
+        info!("Locked + dismounted volume {} on drive {}", vol, drive_no);
+        locked.push(h);
     }
     if locked.is_empty() {
         debug!("No mounted volumes found on drive {}", drive_no);
@@ -1411,10 +1460,10 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
 
 #[cfg(windows)]
 fn physical_drive_number(target: &Path) -> Option<u32> {
-    // "\\.\PhysicalDrive3" -> 3
     target
         .to_string_lossy()
-        .rsplit("PhysicalDrive")
+        .to_ascii_lowercase()
+        .rsplit("physicaldrive")
         .next()?
         .trim()
         .parse()
@@ -1683,6 +1732,28 @@ mod tests {
         assert!(entry.path().metadata().unwrap().is_dir(), "target is a dir, must be skipped not recursed");
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn scan_rounds_to_clusters_and_fit_check_bites() {
+        assert_eq!(fat32_cluster(200 << 20, 512), 512);
+        assert_eq!(fat32_cluster(4 << 30, 512), 4096);
+        assert_eq!(fat32_cluster(12 << 30, 512), 8192);
+        assert_eq!(fat32_cluster(256 << 30, 512), 32 * 1024);
+        assert_eq!(fat32_cluster(200 << 20, 4096), 4096);
+
+        let base = std::env::temp_dir().join(format!("buf-scan-test-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(base.join("a"), [0u8; 1]).unwrap();
+        std::fs::write(base.join("sub/b"), vec![0u8; 5000]).unwrap();
+        let s = scan_tree(&base, 4096).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+
+        assert_eq!((s.total_bytes, s.file_count, s.dir_count), (5001, 2, 1));
+        // a: 1 cluster, b: 2 clusters, sub: 1 cluster
+        assert_eq!(s.alloc_bytes, 4 * 4096);
+        assert!(ensure_fits(s.alloc_bytes, s.alloc_bytes, "t").is_ok());
+        assert!(ensure_fits(s.alloc_bytes + 1, s.alloc_bytes, "t").is_err());
     }
 
     #[test]

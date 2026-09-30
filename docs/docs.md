@@ -133,6 +133,7 @@ Checks performed:
 - Target device exists and is writable
 - Source fits within available target space after the offset
 - Block size is valid
+- Copy mode: the ISO's files fit on the target after filesystem overhead
 
 Nothing is written to the target. The target file is opened for writing as part
 of the access check and then immediately closed.
@@ -163,16 +164,18 @@ bufusb -s ubuntu.iso -t /dev/sdb --mode copy
 with a FAT32 EFI System Partition and copies the ISO's files across instead,
 needed for images that aren't isohybrid and won't boot from a raw write.
 
-If left unset, buf sniffs the image (boot signature, ISO9660, UDF) and picks
-whichever mode the image actually supports. If the mode you pass doesn't match
-what the image supports, buf warns and asks for confirmation before writing an
+If left unset, bufusb sniffs the image (boot signature, ISO9660, UDF) and picks
+whichever mode the image actually supports. Hybrid images (bootable as a raw
+write and extractable) default to `dd`, since some distros (e.g. Fedora) find
+their boot media by a volume label that FAT32 can't hold. If the mode you pass doesn't match
+what the image supports, bufusb warns and asks for confirmation before writing an
 image that may not boot (skippable with `--force`).
 
 Files over FAT32's 4 GB for individual files (e.g. Windows `install.wim`) are handled with an
 NTFS + UEFI:NTFS fallback automatically (thanks to [Pete Batard](https://github.com/pbatard/rufus/tree/master/res/uefi)), Linux and Windows only. Not supported
 on macOS (for now)
 
-`copy` mode ignores `--block-size` and `--offset`, buf warns if either is set.
+`copy` mode ignores `--block-size` and `--offset`, bufusb warns if either is set.
 
 
 ### `--log-path <PATH>`

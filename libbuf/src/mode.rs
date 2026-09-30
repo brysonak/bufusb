@@ -102,14 +102,13 @@ impl ImageCaps {
     }
 }
 
-// Pick a mode when the user did not force one. Prefer copy whenever the image
-// has an extractable filesystem, also for hybrid images. dd is the fallback for raw disk images with no extractable tree
+
 pub fn auto(caps: ImageCaps) -> Result<Mode> {
-    if caps.copy_capable() {
-        return Ok(Mode::Copy);
-    }
     if caps.dd_bootable {
         return Ok(Mode::Dd);
+    }
+    if caps.copy_capable() {
+        return Ok(Mode::Copy);
     }
     bail!(
         "Fatal: Source is neither an extractable ISO9660/UDF image nor a bootable disk \
@@ -134,8 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_prefers_copy_when_extractable() {
-        assert_eq!(auto(caps(true, true, false)).unwrap(), Mode::Copy); // hybrid
+    fn auto_copy_only_for_extract_only_images() {
+        assert_eq!(auto(caps(true, true, false)).unwrap(), Mode::Dd); // hybrid
         assert_eq!(auto(caps(false, true, false)).unwrap(), Mode::Copy);
         assert_eq!(auto(caps(false, false, true)).unwrap(), Mode::Copy); // UDF-only
     }

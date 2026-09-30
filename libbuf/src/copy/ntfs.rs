@@ -56,6 +56,12 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     }
     let ntfs_sectors = total_sectors - ALIGN_LBA - GPT_TAIL - loader_sectors;
 
+    super::ensure_fits(
+        scan.alloc_bytes + (scan.file_count + scan.dir_count) * 1024 + 64 * 1024 * 1024,
+        ntfs_sectors * SECTOR,
+        target,
+    )?;
+
     info!(
         "ntfs-copy: {} across {} files, largest {}, efi_boot={}",
         human_bytes(scan.total_bytes),
