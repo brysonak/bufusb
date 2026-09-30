@@ -27,6 +27,6 @@ nix profile install github:brysonak/bufusb
 
 ## Windows
 
-If you're on x64, run the `bufusb-setup-0.2.4-x64.exe` installer from the [releases page](https://github.com/brysonak/bufusb/releases).
+If you're on x64, run the `bufusb-setup-0.2.5-x64.exe` installer from the [releases page](https://github.com/brysonak/bufusb/releases).
 
-If you're on ARM64 hardware, run `bufusb-setup-0.2.4-arm64.exe` instead
+If you're on ARM64 hardware, run `bufusb-setup-0.2.5-arm64.exe` instead
