@@ -241,10 +241,10 @@ Writing to block devices requires root on Linux/macOS and Administrator on Windo
 If bufusb is not already running with the required privileges it will attempt to
 re-launch itself elevated automatically.
 
-On Linux it tries `sudo` first, then `pkexec` as a fallback. On Windows it
+On Linux it tries `sudo` first, then `pkexec`, `doas`, and `run0` as a fallback. On Windows it
 triggers a UAC prompt via `ShellExecuteW` with the `runas` verb.
 
-If neither elevator is available on Linux, bufusb exits with an error asking you to
+If no elevator is available on Linux, bufusb exits with an error asking you to
 re-run as root manually.
 
 ## Examples
