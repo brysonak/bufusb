@@ -14,7 +14,7 @@ indicatif = "0.17"
 fatfs     = "0.3"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.27", features = ["user", "process"] }
+nix = { version = "0.27", features = ["user", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [
