@@ -18,7 +18,7 @@
 
 
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::{debug, info};
 
 pub fn is_privileged() -> bool {
     #[cfg(unix)]
@@ -36,14 +36,13 @@ pub fn is_privileged() -> bool {
 
     #[cfg(not(any(unix, windows)))]
     {
-        warn!("Cannot determine privilege level on this platform, assuming OK");
+        log::warn!("Cannot determine privilege level on this platform, assuming OK");
         return true;
     }
 }
 
 pub fn elevate_or_warn(args: &[String]) -> Result<()> {
-    warn!("bufusb must be run as root/Administrator to write to block devices");
-    eprintln!("\n  bufusb requires elevated privileges to write to block devices.\n");
+    crate::say!("\n  bufusb requires elevated privileges to write to block devices.\n");
 
     #[cfg(unix)]
     return unix_elevate(args);
@@ -52,10 +51,7 @@ pub fn elevate_or_warn(args: &[String]) -> Result<()> {
     return windows_elevate(args);
 
     #[cfg(not(any(unix, windows)))]
-    {
-        eprintln!("  Please re-run bufusb with administrator/root privileges.");
-        std::process::exit(1);
-    }
+    anyhow::bail!("Fatal: re-run bufusb with administrator/root privileges");
 }
 
 #[cfg(unix)]
@@ -68,26 +64,23 @@ fn unix_elevate(args: &[String]) -> Result<()> {
         Ok(v) if !v.trim().is_empty() => {
             let v = v.trim().to_string();
             if !can_exec(&v) {
-                eprintln!("BUF_SUDO is set to '{}' but that is not an executable.", v);
-                std::process::exit(1);
+                anyhow::bail!("Fatal: BUF_SUDO is set to '{}' but that is not an executable", v);
             }
+            info!("Escalator from BUF_SUDO: {}", v);
             v
         }
         _ => match CANDIDATES.iter().find(|c| can_exec(c)) {
             Some(c) => c.to_string(),
-            None => {
-                eprintln!(
-                    "No escalation tool found (tried {}). Re-run bufusb as root, or set \
-                     BUF_SUDO to the one you use.",
-                    CANDIDATES.join(", ")
-                );
-                std::process::exit(1);
-            }
+            None => anyhow::bail!(
+                "Fatal: no escalation tool found (tried {}). Re-run bufusb as root, or set \
+                 BUF_SUDO to the one you use",
+                CANDIDATES.join(", ")
+            ),
         },
     };
 
-    eprintln!("  Attempting to re-launch via {}...\n", escalator);
-    info!("Re-launching via {} {:?} {:?}", escalator, exe, args);
+    crate::say!("  Attempting to re-launch via {}...\n", escalator);
+    info!("Re-launching: {} {:?} {:?}", escalator, exe, args);
 
     let status = std::process::Command::new(&escalator)
         .arg(&exe)
@@ -95,6 +88,7 @@ fn unix_elevate(args: &[String]) -> Result<()> {
         .status()
         .map_err(|e| anyhow::anyhow!("Failed to spawn {}: {}", escalator, e))?;
 
+    info!("Elevated run exited with {}", status);
     std::process::exit(status.code().unwrap_or(1));
 }
 
@@ -166,8 +160,8 @@ fn windows_elevate(args: &[String]) -> Result<()> {
         quoted.join(" ")
     );
 
-    eprintln!("  Requesting UAC elevation...\n");
-    info!("Requesting UAC elevation for {:?} with args {:?}", exe, args);
+    crate::say!("  Requesting UAC elevation...\n");
+    info!("Requesting UAC elevation: cmd.exe {}", cmd_params);
 
     fn to_wide(s: &str) -> Vec<u16> {
         OsStr::new(s).encode_wide().chain(once(0)).collect()
@@ -192,6 +186,8 @@ fn windows_elevate(args: &[String]) -> Result<()> {
         anyhow::bail!("Fatal: UAC elevation was declined or failed (ShellExecuteW code {})", r.0);
     }
 
+    // ShellExecuteW doesn't hand back the child, the elevated window logs the rest into the same file
+    info!("Elevated window launched, this process exits");
     std::process::exit(0);
 }
 

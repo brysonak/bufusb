@@ -19,7 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Parser};
-use libbuf::Mode;
+use libbuf::{say, Mode};
 use log::{debug, error, info, warn};
 
 #[derive(Parser, Debug)]
@@ -120,7 +120,7 @@ struct Cli {
     #[arg(
         long = "log-path",
         value_name = "PATH",
-        help = "Write the log file to this path (default path is the HOME/user directory)"
+        help = "Write the log file to this path (default: a timestamped file in the per-user log directory, see docs)"
     )]
     log_path: Option<String>,
 
@@ -136,44 +136,44 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    if let Err(e) = run(cli) {
-        error!("{:#}", e);
-        eprintln!("\n  Error: {:#}\n", e);
+    if cli.no_logging && cli.log_path.is_some() {
+        eprintln!("error: --log-path and --no-logging cannot be used together");
         std::process::exit(1);
+    }
+
+    let custom_log_path = cli.log_path.as_deref().map(|p| {
+        std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.into())
+    });
+
+    let file_logging = !cli.no_logging && (!cli.list || custom_log_path.is_some());
+    let log_path = libbuf::init_logger(file_logging, cli.verbose, custom_log_path);
+    if let Some(ref path) = log_path {
+        println!("Logging to: {}", path.display());
+    }
+    libbuf::logger::log_context();
+    debug!("Parsed CLI args: {:?}", cli);
+
+    let start = std::time::Instant::now();
+    let result = run(cli, log_path.as_deref());
+    match result {
+        Ok(()) => info!("Finished OK after {:.1?}", start.elapsed()),
+        Err(e) => {
+            error!("{:#}", e);
+            info!("Failed after {:.1?}", start.elapsed());
+            if let Some(p) = log_path {
+                eprintln!("The full log is at {}", p.display());
+            }
+            std::process::exit(1);
+        }
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     if cli.list {
         let devices = libbuf::list_drives()?;
         libbuf::print_device_table(&devices);
         return Ok(());
     }
-
-    if cli.no_logging && cli.log_path.is_some() {
-        bail!("Fatal: --log-path and --no-logging cannot be run at the same time. Stopping...");
-    }
-
-    // Absolute before elevation 
-    let custom_log_path = cli
-        .log_path
-        .as_deref()
-        .map(|p| std::env::current_dir().map(|d| d.join(p)))
-        .transpose()
-        .context("Could not resolve --log-path")?;
-
-    let log_path = libbuf::init_logger(!cli.no_logging, cli.verbose, custom_log_path.clone())
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not initialise logger: {}", e);
-            None
-        });
-
-    if let Some(ref path) = log_path {
-        println!("Logging to: {}", path.display());
-    }
-
-    info!("bufusb started");
-    debug!("Parsed CLI args: {:?}", cli);
 
     let source = cli
         .source
@@ -188,9 +188,7 @@ fn run(cli: Cli) -> Result<()> {
     // Parse --mode early. If the user asked for both dd and copy at once, stop before we prompt for elevation or touch the device
     let requested = parse_modes(&cli.mode)?;
     if requested.len() >= 2 {
-        error!("User requested both dd and copy modes at once");
-        eprintln!("Fatal: Cannot use both dd and copy modes at the same time, stopping...");
-        std::process::exit(1);
+        bail!("Fatal: Cannot use both dd and copy modes at the same time, stopping...");
     }
     let requested: Option<Mode> = requested.first().copied();
 
@@ -217,9 +215,11 @@ fn run(cli: Cli) -> Result<()> {
         .with_context(|| format!("Could not resolve target path: {}", target))?
         .to_string_lossy()
         .into_owned();
+    info!("Source: {}", source);
+    info!("Target: {}", target);
 
     if !libbuf::is_privileged() {
-        warn!("Not running as root/Administrator");
+        info!("Not running as root/Administrator, relaunching elevated");
         let mut argv = vec![
             "--source".to_string(), source.clone(),
             "--target".to_string(), target.clone(),
@@ -233,7 +233,7 @@ fn run(cli: Cli) -> Result<()> {
         if cli.offset != 0 {
             argv.extend(["--offset".to_string(), cli.offset.to_string()]);
         }
-        if let Some(ref p) = custom_log_path {
+        if let Some(p) = log_path {
             argv.extend(["--log-path".to_string(), p.to_string_lossy().into_owned()]);
         }
         if let Some(ref l) = cli.label {
@@ -246,21 +246,32 @@ fn run(cli: Cli) -> Result<()> {
         libbuf::elevate_or_warn(&argv)?;
     }
 
+    log_target_device(&target);
+
     // Sniff the image and settle on a single mode
     let caps = libbuf::ImageCaps::sniff(std::path::Path::new(&source))
         .with_context(|| format!("Could not read source header: {}", source))?;
+    info!(
+        "Source image: {} bytes, {:?}",
+        std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0),
+        caps
+    );
     let mode = match requested {
         Some(m) => {
-            if libbuf::mode::mode_risky(m, caps) && !cli.force {
+            let risky = libbuf::mode::mode_risky(m, caps);
+            info!("Write mode: {} (forced with --mode, mismatched with image: {})", m, risky);
+            if risky && !cli.force {
                 confirm_risky_mode()?;
             }
             m
         }
-        // No --mode given, auto-detect. Hybrids default to copy, dd only raw
-        // images get dd, extract-only ISOs get copy
-        None => libbuf::mode::auto(caps)?,
+        // No --mode given, auto-detect. Hybrids and raw images get dd, extract-only ISOs get copy
+        None => {
+            let m = libbuf::mode::auto(caps)?;
+            info!("Write mode: {} (auto-detected)", m);
+            m
+        }
     };
-    info!("Write mode: {}", mode);
 
     match mode {
         Mode::Dd => write_dd(&cli, &source, &target),
@@ -268,9 +279,22 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+fn log_target_device(target: &str) {
+    match libbuf::list_drives() {
+        Ok(drives) => match drives.iter().find(|d| d.path.eq_ignore_ascii_case(target)) {
+            Some(d) => info!(
+                "Target device: {} | {} | {} ({} bytes) | removable={}",
+                d.path, d.model, d.size_human, d.size_bytes, d.removable
+            ),
+            None => info!("Target {} is not in the drive list (image file, or a filtered device)", target),
+        },
+        Err(e) => info!("Could not enumerate drives to describe the target: {:#}", e),
+    }
+}
+
 fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
     if cli.label.is_some() {
-        println!("Warning: Flag(s) --label is not usable in dd mode, ignoring...");
+        warn!("--label is not usable in dd mode, ignoring");
     }
 
     let block_size = parse_size(&cli.block_size)
@@ -289,31 +313,24 @@ fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
         offset: cli.offset,
     };
 
-    println!("\n  Validating source and target...");
+    say!("\n  Validating source and target...");
     let (source_size, target_file) = libbuf::validate(&params)?;
-    println!("  Validation passed.");
-    info!("Validation passed, source size {} bytes", source_size);
+    say!("  Validation passed.");
 
     if cli.dry_run {
-        println!("\n  --dry-run: all checks passed. Nothing was written.\n");
-        info!("Dry-run complete, exiting without writing");
+        say!("\n  --dry-run: all checks passed. Nothing was written.\n");
         return Ok(());
     }
 
     if !cli.force {
         confirm(source, target, source_size)?;
     } else {
-        warn!("--force set, skipping confirmation prompt");
-        println!("\n  --force: skipping confirmation, {} -> {}", source, target);
+        say!("\n  --force: skipping confirmation, {} -> {}", source, target);
     }
 
-    println!("\n  Writing {} -> {}...\n", source, target);
-    info!("Starting write: {} -> {}", source, target);
-
+    say!("\n  Writing {} -> {}...\n", source, target);
     libbuf::write(&params, source_size, target_file)?;
-
-    info!("Write completed successfully");
-    println!("Write completed successfully.");
+    say!("Write completed successfully.");
 
     Ok(())
 }
@@ -335,10 +352,7 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
         irrelevant.push("--block-size");
     }
     if !irrelevant.is_empty() {
-        println!(
-            "Warning: Flag(s) {} is not usable in copy mode, ignoring...",
-            irrelevant.join(", ")
-        );
+        warn!("{} not usable in copy mode, ignoring", irrelevant.join(", "));
     }
 
     if cli.dry_run {
@@ -349,13 +363,10 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
         let iso_len = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
         confirm(source, target, iso_len)?;
     } else {
-        warn!("--force set, skipping confirmation prompt");
-        println!("\n  --force: skipping confirmation, copy {} -> {}", source, target);
+        say!("\n  --force: skipping confirmation, copy {} -> {}", source, target);
     }
 
-    println!("\n  Copying {} -> {} (ISO mode)...\n", source, target);
-    info!("Starting copy: {} -> {}", source, target);
-
+    say!("\n  Copying {} -> {} (ISO mode)...\n", source, target);
     libbuf::copy::run(source, target, false, cli.label.as_deref())
 }
 
@@ -400,6 +411,7 @@ fn confirm_risky_mode() -> Result<()> {
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
+    info!("Risky mode prompt answered {:?}", input.trim());
     if input.trim().to_ascii_lowercase() != "y" {
         bail!("Aborted by user.");
     }

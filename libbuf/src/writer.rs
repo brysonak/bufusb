@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -29,12 +29,8 @@ use crate::list::human_bytes;
 use crate::validate::WriteParams;
 
 pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Result<()> {
-    info!("Beginning write operation");
-    info!("  source     : {}", params.source);
-    info!("  target     : {}", params.target);
-    info!("  block_size : {} bytes", params.block_size);
-    info!("  offset     : {} bytes", params.offset);
-    info!("  source_size: {} bytes ({})", source_size, human_bytes(source_size));
+    // source, target, block size and offset were already logged 
+    info!("Beginning write of {} bytes ({})", source_size, human_bytes(source_size));
 
     let source_path = Path::new(&params.source);
 
@@ -49,12 +45,13 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     // Query physical sector size for alignment. With O_DIRECT / FILE_FLAG_NO_BUFFERING,
     // every write must be a multiple of this size in length and start on an aligned offset
     let sector_size = get_sector_size(Path::new(&params.target));
-    debug!("Sector size for {}: {} bytes", params.target, sector_size);
+    info!("Sector size for {}: {} bytes", params.target, sector_size);
 
     // block_size is already validated to be non-zero. Round it up to a sector boundary
     // so that all full blocks are already aligned, and only the final partial block
     // needs extra handling 
     let aligned_block = round_up(params.block_size, sector_size);
+    info!("Write block: {} bytes ({} requested), direct I/O", aligned_block, params.block_size);
 
     let mut target = DirectWriter::new(target_file, sector_size);
 
@@ -76,13 +73,14 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     let mut bytes_written: u64 = 0;
     let mut blocks_written: u64 = 0;
     let start = Instant::now();
+    let step = (source_size / 20).max(1);
+    let mut next_mark = step;
 
     loop {
         let bytes_read = read_full(&mut source_file, buffer.as_mut_slice_n(aligned_block))
             .context("Read error from source")?;
 
         if bytes_read == 0 {
-            debug!("EOF reached after {} blocks", blocks_written);
             break;
         }
 
@@ -91,20 +89,40 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
             buffer.zero_range(bytes_read, write_len);
         }
 
-        target
-            .write_all(buffer.as_slice_n(write_len))
-            .context("Write error to target, device may be full or disconnected")?;
+        target.write_all(buffer.as_slice_n(write_len)).with_context(|| {
+            format!(
+                "Write error to target at byte {}, device may be full or disconnected",
+                params.offset + bytes_written
+            )
+        })?;
 
         bytes_written += bytes_read as u64;
         blocks_written += 1;
 
         pb.set_position(bytes_written);
 
-        debug!("Block {:>6} | {} bytes | {} total", blocks_written, bytes_read, bytes_written);
+        if bytes_written >= next_mark {
+            let secs = start.elapsed().as_secs_f64().max(0.001);
+            info!(
+                "Progress: {}% ({} / {}), {}/s average, {} blocks",
+                bytes_written * 100 / source_size.max(1),
+                human_bytes(bytes_written),
+                human_bytes(source_size),
+                human_bytes((bytes_written as f64 / secs) as u64),
+                blocks_written,
+            );
+            next_mark = (bytes_written / step + 1) * step;
+        }
+    }
+    debug!("EOF after {} blocks, {} bytes", blocks_written, bytes_written);
+    if bytes_written != source_size {
+        warn!("Wrote {} bytes but the source was {} bytes at validation, did it change?", bytes_written, source_size);
     }
 
     pb.set_message("Syncing...");
+    let sync_start = Instant::now();
     target.sync().context("Sync error, data may not have reached the device")?;
+    info!("Sync took {:.2?}", sync_start.elapsed());
     pb.finish_with_message("Done");
 
     let elapsed = start.elapsed();
@@ -119,12 +137,12 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
         blocks_written,
     );
 
-    println!(
+    crate::logger::term(&format!(
         "\n  Written : {}\n  Time    : {:.2}s\n  Speed   : {}/s\n",
         human_bytes(bytes_written),
         elapsed_secs,
         human_bytes(throughput as u64),
-    );
+    ), false);
 
     Ok(())
 }
@@ -216,6 +234,7 @@ fn build_progress_bar(total_bytes: u64) -> ProgressBar {
         .progress_chars("##-"),
     );
     pb.set_message("Writing...");
+    crate::logger::set_bar(&pb);
     pb
 }
 
