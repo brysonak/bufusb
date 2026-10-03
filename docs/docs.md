@@ -147,8 +147,8 @@ bufusb -s image.iso -t /dev/sdb --no-logging
 bufusb -s image.iso -t /dev/sdb -n
 ```
 
-By default, bufusb creates a timestamped log file in the user's home directory on
-each run. This flag suppresses that. Cannot be combined with `--log-path`.
+By default, bufusb creates a timestamped log file on each run (see [Logging](#logging)).
+This flag suppresses that. Cannot be combined with `--log-path`.
 
 ### `-m, --mode <MODE>`
 
@@ -180,8 +180,8 @@ on macOS (for now)
 
 ### `--log-path <PATH>`
 
-Write the log file to the given path instead of the default timestamped file in
-the home directory.
+Write the log file to the given path instead of the default timestamped file
+(see [Logging](#logging)). An existing file is appended to.
 
 ```sh
 bufusb -s image.iso -t /dev/sdb --log-path /tmp/flash.log
@@ -193,9 +193,9 @@ The parent directory is created if it does not exist. Cannot be combined with
 
 ### `-v, --verbose`
 
-Enable debug-level logging. Logs every block written, ioctl results, device
-paths, and internal state. Implies log file creation unless `--no-logging` is
-also set.
+Enable debug-level logging in the log file: ioctl results, every directory
+created in copy mode, skipped devices during enumeration, and other internal state.
+The terminal still only shows warnings and errors.
 
 ```sh
 bufusb -s image.iso -t /dev/sdb --verbose
@@ -212,13 +212,21 @@ Print the version and exit.
 
 ## Logging
 
-Unless `--no-logging` is passed, bufusb writes a timestamped log file to the home
-directory on each run. The filename format is:
+Unless `--no-logging` is passed, bufusb writes a timestamped log file on each
+write run, named `bufusb-YYYY-MM-DDTHH-MM-SS.log`, in:
 
-```
-bufusb-MM-DD-YY-HH:MM:SS.log   (Linux, macOS)
-bufusb-MM-DD-YY-HH-MM-SS.log   (Windows, colons are not valid in filenames)
-```
+| Platform | Directory |
+|----------|-----------|
+| Linux    | `$XDG_STATE_HOME/bufusb`, or `~/.local/state/bufusb` |
+| macOS    | `~/Library/Logs/bufusb` |
+| Windows  | `%LOCALAPPDATA%\bufusb\logs` |
+
+`--list` does not write a log unless `--log-path` is given.
+
+When bufusb relaunches itself elevated, the elevated run appends to the same file,
+so one run is one log. Each line carries the process ID, so the two halves can be
+told apart. Under `sudo`, `doas`, `run0` or `pkexec` the log goes to the invoking
+user's directory, and files created in that user's home are owned by them.
 
 Use `--log-path` to write the log to a specific file instead:
 
@@ -226,14 +234,24 @@ Use `--log-path` to write the log to a specific file instead:
 bufusb -s image.iso -t /dev/sdb --log-path /var/log/bufusb.log
 ```
 
-The log path is printed at startup:
+The log path is printed at startup, and again next to the error if the run fails:
 
 ```
-  Logging to: /home/user/bufusb-05-30-26-14:22:01.log
+  Logging to: /home/user/.local/state/bufusb/bufusb-2026-05-30T14-22-01.log
 ```
 
-Log files contain info-level output by default, debug-level with `--verbose`.
-Warnings and errors are always mirrored to stderr regardless of the log settings.
+What the log records, at the default info level:
+
+- bufusb version, OS and architecture, the exact command line, working directory, privilege level and invoking user
+- the target device (model, size, removable) as the drive list sees it, and every drive found
+- the image's detected capabilities and the chosen write mode, and why
+- every external tool run (`mount`, `umount`, `mkfs.ntfs`, `diskutil`, `hdiutil`, PowerShell), with its exit status and full output
+- dd mode: sector size, block size, a progress line every 5% with average speed, sync time
+- copy mode: label resolution, partition layout, cluster size, every file copied, skipped files and why, sync time
+- answers to confirmation prompts, total run time, and any error or panic
+
+The terminal only shows warnings and errors, prefixed `warning:` / `error:`. If the
+log file cannot be opened, bufusb says so and keeps going with terminal output only.
 
 ## Privileges
 
@@ -241,11 +259,12 @@ Writing to block devices requires root on Linux/macOS and Administrator on Windo
 If bufusb is not already running with the required privileges it will attempt to
 re-launch itself elevated automatically.
 
-On Linux it tries `sudo` first, then `pkexec` as a fallback. On Windows it
-triggers a UAC prompt via `ShellExecuteW` with the `runas` verb.
+On Linux and macOS it tries `doas`, `sudo`, `run0`, then `pkexec`, or whatever
+`BUF_SUDO` names. On Windows it triggers a UAC prompt via `ShellExecuteW` with the
+`runas` verb.
 
-If neither elevator is available on Linux, bufusb exits with an error asking you to
-re-run as root manually.
+If none of them is available, bufusb exits with an error asking you to re-run as
+root manually.
 
 ## Examples
 

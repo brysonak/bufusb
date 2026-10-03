@@ -19,7 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use indicatif::ProgressBar;
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,8 @@ use super::{
     resolve_symlink, write_gpt, PartSpec, Scan, ESP_TYPE, MS_BASIC_DATA,
 };
 use crate::list::human_bytes;
+use crate::logger::{run as run_logged, tail};
+use crate::say;
 
 const SECTOR: u64 = 512;
 
@@ -55,6 +57,13 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
         bail!("Target {} is too small for an NTFS + UEFI:NTFS layout", target);
     }
     let ntfs_sectors = total_sectors - ALIGN_LBA - GPT_TAIL - loader_sectors;
+    info!(
+        "NTFS layout: data LBA {}..{} ({}), UEFI:NTFS loader {} sectors after it",
+        ALIGN_LBA,
+        ALIGN_LBA + ntfs_sectors - 1,
+        human_bytes(ntfs_sectors * SECTOR),
+        loader_sectors
+    );
 
     super::ensure_fits(
         scan.alloc_bytes + (scan.file_count + scan.dir_count) * 1024 + 64 * 1024 * 1024,
@@ -62,16 +71,10 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
         target,
     )?;
 
-    info!(
-        "ntfs-copy: {} across {} files, largest {}, efi_boot={}",
-        human_bytes(scan.total_bytes),
-        scan.file_count,
-        human_bytes(scan.max_file),
-        scan.has_efi_boot,
-    );
+    info!("Largest file {} is over the FAT32 limit, using the NTFS + UEFI:NTFS layout", human_bytes(scan.max_file));
 
     if dry_run {
-        println!(
+        say!(
             "\n --dry-run (copy mode, NTFS fallback): would write a GPT ({} NTFS data \
              partition + {} UEFI:NTFS loader partition) to {} and copy {} across {} files \
              from {}.",
@@ -82,7 +85,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
             scan.file_count,
             source,
         );
-        println!();
+        say!();
         return Ok(());
     }
 
@@ -115,8 +118,10 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     drop(io);
 
     dev.sync_data().context("Sync of GPT + loader to device failed")?;
+    info!("GPT and UEFI:NTFS loader written at LBA {}", loader_start);
     drop(prep);
     let reread = reread_partitions(&dev, target_path);
+    info!("Partition table re-read by the OS: {}", reread);
     drop(dev);
     if !reread && cfg!(target_os = "linux") {
         bail!(
@@ -132,20 +137,19 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
         format_and_copy(target_path, mroot, Path::new(source), !scan.has_efi_boot, &pb, label)?;
 
     if skipped > 0 {
-        println!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
+        say!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
     }
     if extracted_boot {
-        println!("note: EFI bootloader extracted from the ISO's El-Torito boot image");
+        say!("note: EFI bootloader extracted from the ISO's El-Torito boot image");
     }
     if !scan.has_efi_boot && !extracted_boot {
-        warn!("No /EFI/BOOT/BOOT*.EFI found in image; result may not be UEFI-bootable (Note: Try flashing with --mode dd)");
-        println!(
-            "warning: no EFI bootloader (/EFI/BOOT/BOOT*.EFI) found in the image \
-             or its El-Torito boot image; it may not boot under UEFI"
+        warn!(
+            "no EFI bootloader (/EFI/BOOT/BOOT*.EFI) found in the image \
+             or its El-Torito boot image; it may not boot under UEFI (try --mode dd)"
         );
     }
 
-    println!(
+    say!(
         "\n Copy complete (NTFS + UEFI:NTFS): {} across {} files written to {}\n",
         human_bytes(scan.total_bytes),
         scan.file_count,
@@ -203,7 +207,7 @@ fn copy_tree_native(mroot: &Path, dst_root: &Path, pb: &ProgressBar) -> Result<u
                     let n = std::io::copy(&mut src, &mut dst_file)
                         .map_err(|e| anyhow::anyhow!("copy {}: {}", rel.display(), e))?;
                     pb.inc(n);
-                    debug!("copied {} ({} bytes)", rel.display(), n);
+                    info!("copied {} ({} bytes)", rel.display(), n);
                 }
                 Err(e) => {
                     warn!("skipping {} ({})", p.display(), e);
@@ -229,15 +233,10 @@ fn format_and_copy(
     let part_node = partition_node(target, 1);
     wait_for_node(&part_node)?;
 
-    let st = Command::new("mkfs.ntfs")
-        .args(["-f", "-F", "-L", label])
-        .arg(&part_node)
-        .status()
-        .context(
-            "failed to run mkfs.ntfs (is ntfs-3g and ntfsprogs installed?)",
-        )?;
-    if !st.success() {
-        bail!("mkfs.ntfs exited with {}", st);
+    let out = run_logged(Command::new("mkfs.ntfs").args(["-f", "-F", "-L", label]).arg(&part_node))
+        .context("failed to run mkfs.ntfs (is ntfs-3g and ntfsprogs installed?)")?;
+    if !out.status.success() {
+        bail!("mkfs.ntfs exited with {}: {}", out.status, tail(&out));
     }
 
     let mount = NtfsMount::mount(&part_node)?;
@@ -251,7 +250,7 @@ fn format_and_copy(
     }
 
     pb.finish_with_message("Copied");
-    println!("Syncing to device, all data is still being written, do not unplug...");
+    say!("Syncing to device, all data is still being written, do not unplug...");
     mount.unmount()?;
     File::open(&part_node)
         .and_then(|f| f.sync_all())
@@ -299,30 +298,23 @@ impl NtfsMount {
 
         // Prefer the in-kernel ntfs3 driver, fall back to the ntfs-3g FUSE
         // driver if ntfs3 isn't available on this kernel/distro
-        let ok = Command::new("mount")
-            .args(["-t", "ntfs3", "-o", "rw"])
-            .arg(node)
-            .arg(&mp)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        let ok = ok
-            || Command::new("mount")
-                .args(["-t", "ntfs-3g"])
-                .arg(node)
-                .arg(&mp)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-
-        if !ok {
-            let _ = std::fs::remove_dir(&mp);
-            bail!(
-                "Fatal: Could not mount {} as NTFS (tried ntfs3 and ntfs-3g). Is one of them installed?",
-                node.display()
-            );
+        let mut errors = Vec::new();
+        for fstype in ["ntfs3", "ntfs-3g"] {
+            match run_logged(Command::new("mount").args(["-t", fstype, "-o", "rw"]).arg(node).arg(&mp)) {
+                Ok(o) if o.status.success() => {
+                    info!("Mounted {} with the {} driver at {}", node.display(), fstype, mp.display());
+                    return Ok(Self { mount_point: mp, mounted: true });
+                }
+                Ok(o) => errors.push(format!("{}: {}", fstype, tail(&o))),
+                Err(e) => errors.push(format!("{}: {}", fstype, e)),
+            }
         }
-        Ok(Self { mount_point: mp, mounted: true })
+        let _ = std::fs::remove_dir(&mp);
+        bail!(
+            "Fatal: Could not mount {} as NTFS ({}). Is ntfs3 or ntfs-3g available?",
+            node.display(),
+            errors.join("; ")
+        );
     }
 
     fn mount_point(&self) -> &Path {
@@ -331,16 +323,14 @@ impl NtfsMount {
 
     fn unmount(mut self) -> Result<()> {
         self.mounted = false;
-        let st = Command::new("umount")
-            .arg(&self.mount_point)
-            .status()
-            .context("failed to run umount")?;
-        if !st.success() {
+        let out = run_logged(Command::new("umount").arg(&self.mount_point)).context("failed to run umount")?;
+        if !out.status.success() {
             bail!(
-                "Fatal: umount {} exited with {}, data may not be fully written. \
+                "Fatal: umount {} exited with {} ({}), data may not be fully written. \
                  Unmount it manually before unplugging",
                 self.mount_point.display(),
-                st
+                out.status,
+                tail(&out)
             );
         }
         Ok(())
@@ -351,7 +341,7 @@ impl NtfsMount {
 impl Drop for NtfsMount {
     fn drop(&mut self) {
         if self.mounted {
-            let _ = Command::new("umount").arg(&self.mount_point).status();
+            let _ = run_logged(Command::new("umount").arg(&self.mount_point));
         }
         let _ = std::fs::remove_dir(&self.mount_point);
     }
@@ -384,12 +374,10 @@ fn format_and_copy(
         n = drive_no,
         label = label
     );
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-        .output()
+    let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
         .context("failed to run Format-Volume")?;
     if !out.status.success() {
-        bail!("NTFS format failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!("NTFS format failed: {}", tail(&out));
     }
     let letter = String::from_utf8_lossy(&out.stdout)
         .trim()
@@ -398,6 +386,7 @@ fn format_and_copy(
         .filter(|c| c.is_ascii_alphabetic())
         .ok_or_else(|| anyhow::anyhow!("could not determine the assigned drive letter"))?;
     let mp = PathBuf::from(format!("{}:\\", letter));
+    info!("NTFS volume formatted and mounted at {}", mp.display());
 
     let skipped = copy_tree_native(mroot, &mp, pb)?;
     let mut extracted = false;
@@ -409,17 +398,15 @@ fn format_and_copy(
     }
 
     pb.finish_with_message("Copied");
-    println!("Syncing to device, all data is still being written, do not unplug...");
-    let st = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!("$ErrorActionPreference='Stop'; Write-VolumeCache -DriveLetter {}", letter),
-        ])
-        .status()
-        .context("failed to run Write-VolumeCache")?;
-    if !st.success() {
+    say!("Syncing to device, all data is still being written, do not unplug...");
+    let out = run_logged(Command::new("powershell").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!("$ErrorActionPreference='Stop'; Write-VolumeCache -DriveLetter {}", letter),
+    ]))
+    .context("failed to run Write-VolumeCache")?;
+    if !out.status.success() {
         bail!("Fatal: flushing {}: failed, data may not be fully written. Eject it before unplugging", letter);
     }
 

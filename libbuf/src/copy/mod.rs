@@ -27,6 +27,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::list::human_bytes;
+use crate::logger::{run as run_logged, tail};
+use crate::say;
 
 #[cfg(any(target_os = "linux", windows))]
 mod ntfs;
@@ -38,6 +40,11 @@ const CACHE_BYTES: usize = 32 * 1024 * 1024; // SectorCache's cap, covers a typi
 
 pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Result<()> {
     let (mut label, explicit_label) = resolve_label(label, Path::new(source));
+    info!(
+        "Volume label: '{}' ({})",
+        label,
+        if explicit_label { "from --label" } else { "from the ISO, or the BUF default" }
+    );
     let target_path = Path::new(target);
     let sector = logical_sector_size(target_path);
     if !sector.is_power_of_two() || !(512..=4096).contains(&sector) {
@@ -51,6 +58,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
         bail!("Fatal: Could not determine size of target device {}", target);
     }
     let total_sectors = dev_bytes / sector;
+    info!("Target size: {} bytes, {} sectors", dev_bytes, total_sectors);
 
     // 1 MiB partition 
     let align_lba = (1024 * 1024) / sector;
@@ -66,6 +74,13 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     let part_sectors = total_sectors - align_lba - gpt_tail;
     let part_bytes = part_sectors * sector;
     let cluster = fat32_cluster(part_bytes, sector);
+    info!(
+        "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
+        align_lba,
+        align_lba + part_sectors - 1,
+        human_bytes(part_bytes),
+        cluster
+    );
 
     // Mount the ISO
     let guard = MountGuard::mount(Path::new(source))
@@ -75,9 +90,11 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
 
     let scan = scan_tree(&mroot, cluster)?;
     info!(
-        "copy: {} across {} files, largest {}, efi_boot={}",
+        "ISO tree: {} across {} files and {} dirs, {} once cluster-rounded, largest {}, efi_boot={}",
         human_bytes(scan.total_bytes),
         scan.file_count,
+        scan.dir_count,
+        human_bytes(scan.alloc_bytes),
         human_bytes(scan.max_file),
         scan.has_efi_boot,
     );
@@ -97,14 +114,15 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     if label.len() > 11 {
         let short = String::from_utf8_lossy(&fat_label(&label)).trim_end().to_string();
         if explicit_label {
-            warn!("Label '{}' truncated to '{}' for FAT32", label, short);
-            println!("note: FAT32 labels are 11 characters, using '{}'", short);
+            warn!("FAT32 labels are 11 characters, using '{}'", short);
+        } else {
+            info!("ISO label '{}' truncated to '{}' for FAT32", label, short);
         }
         label = short;
     }
 
     if dry_run {
-        println!(
+        say!(
             "\n --dry-run (copy mode): would write a GPT (protective MBR + one {} \
              FAT32 data partition) to {} and copy {} across {} files from {}.",
             human_bytes(part_sectors * sector),
@@ -114,11 +132,9 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
             source,
         );
         if !scan.has_efi_boot {
-            println!(
-                "note: no /EFI/BOOT/BOOT*.EFI in the image"
-            );
+            say!("note: no /EFI/BOOT/BOOT*.EFI in the image");
         }
-        println!();
+        say!();
         return Ok(());
     }
 
@@ -165,10 +181,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
                 Ok(found) => {
                     boot_ok = found;
                     if found {
-                        info!("EFI loaders recovered from the El-Torito boot image");
-                        println!(
-                            "note: EFI bootloader extracted from the ISO's El-Torito boot image"
-                        );
+                        say!("note: EFI bootloader extracted from the ISO's El-Torito boot image");
                     }
                 }
                 Err(e) => warn!("El-Torito extraction failed: {:#}", e),
@@ -179,31 +192,33 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
             .map_err(|e| anyhow::anyhow!("FAT32 flush/unmount failed: {}", e))?;
 
         if skipped > 0 {
-            println!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
+            say!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
         }
     }
     io.flush().context("Flushing cached sectors to the device failed")?;
     // release the cache's borrow of dev before we touch dev directly
     drop(io);
     pb.finish_with_message("Copied");
-    println!("Syncing to device, all data is still being written, do not unplug...");
+    say!("Syncing to device, all data is still being written, do not unplug...");
+    let sync_start = std::time::Instant::now();
     dev.sync_data().context("Final sync to device failed")?;
+    info!("Sync took {:.2?}", sync_start.elapsed());
     drop(prep);
-    reread_partitions(&dev, target_path);
+    let reread = reread_partitions(&dev, target_path);
+    info!("Partition table re-read by the OS: {}", reread);
     drop(dev);
 
     // Guard drops here too, but drop explicitly so any unmount error logs now
     drop(guard);
 
     if !boot_ok {
-        warn!("No /EFI/BOOT/BOOT*.EFI found in image; result may not be UEFI-bootable");
-        println!(
-            "warning: no EFI bootloader (/EFI/BOOT/BOOT*.EFI) found in the image \
+        warn!(
+            "no EFI bootloader (/EFI/BOOT/BOOT*.EFI) found in the image \
              or its El-Torito boot image; it may not boot under UEFI"
         );
     }
 
-    println!(
+    say!(
         "\n Copy complete: {} across {} files written to a new FAT32 partition on {}\n",
         human_bytes(scan.total_bytes),
         scan.file_count,
@@ -391,6 +406,7 @@ fn copy_tree<T: ReadWriteSeek>(mroot: &Path, fs: &FileSystem<T>, pb: &ProgressBa
             // skip symlinked dirs
             if ft.is_dir() {
                 dir_for(fs, &comps)?; // creates the directory (and any parents)
+                debug!("mkdir {}", rel.display());
                 stack.push(p);
                 continue;
             }
@@ -417,7 +433,7 @@ fn copy_tree<T: ReadWriteSeek>(mroot: &Path, fs: &FileSystem<T>, pb: &ProgressBa
                 Ok(mut src) => {
                     let n = stream_copy(&mut src, &mut dst, &mut buf, pb)
                         .map_err(|e| anyhow::anyhow!("copy {}: {}", rel.display(), e))?;
-                    debug!("copied {} ({} bytes)", rel.display(), n);
+                    info!("copied {} ({} bytes)", rel.display(), n);
                 }
                 Err(e) => {
                     // Truly dangling... Skip
@@ -574,6 +590,7 @@ fn extract_eltorito_into_fat<T: ReadWriteSeek>(
         stream_copy(src, &mut dst, &mut buf, pb)
             .map_err(|e| anyhow::anyhow!("extract {}: {}", comps.join("/"), e))?;
         found_boot |= is_efi_boot_comps(comps);
+        info!("extracted {} ({} bytes) from the El-Torito image", comps.join("/"), len);
         Ok(())
     })?;
     Ok(found_boot)
@@ -610,6 +627,7 @@ fn extract_eltorito_into_dir(source: &Path, dst_root: &Path, pb: &ProgressBar) -
         stream_copy(src, &mut dst, &mut buf, pb)
             .map_err(|e| anyhow::anyhow!("extract {}: {}", comps.join("/"), e))?;
         found_boot |= is_efi_boot_comps(comps);
+        info!("extracted {} ({} bytes) from the El-Torito image", comps.join("/"), len);
         Ok(())
     })?;
     Ok(found_boot)
@@ -625,6 +643,7 @@ fn build_bar(total: u64) -> ProgressBar {
         .progress_chars("##-"),
     );
     pb.set_message("Copying...");
+    crate::logger::set_bar(&pb);
     pb
 }
 
@@ -1219,15 +1238,11 @@ impl MountGuard {
         use std::process::Command;
         let mp = unique_mountpoint();
         std::fs::create_dir_all(&mp)?;
-        let st = Command::new("mount")
-            .args(["-o", "loop,ro"])
-            .arg(source)
-            .arg(&mp)
-            .status()
+        let out = run_logged(Command::new("mount").args(["-o", "loop,ro"]).arg(source).arg(&mp))
             .context("failed to run mount")?;
-        if !st.success() {
+        if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: mount exited with {}", st);
+            bail!("Fatal: mount exited with {}: {}", out.status, tail(&out));
         }
         Ok(Self { mount_point: mp, source: source.to_path_buf() })
     }
@@ -1239,15 +1254,16 @@ impl MountGuard {
         use std::process::Command;
         let mp = unique_mountpoint();
         std::fs::create_dir_all(&mp)?;
-        let st = Command::new("hdiutil")
-            .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
-            .arg(&mp)
-            .arg(source)
-            .status()
-            .context("failed to run hdiutil attach")?;
-        if !st.success() {
+        let out = run_logged(
+            Command::new("hdiutil")
+                .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
+                .arg(&mp)
+                .arg(source),
+        )
+        .context("failed to run hdiutil attach")?;
+        if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: hdiutil attach exited with {}", st);
+            bail!("Fatal: hdiutil attach exited with {}: {}", out.status, tail(&out));
         }
         Ok(Self { mount_point: mp, source: source.to_path_buf() })
     }
@@ -1272,15 +1288,10 @@ impl MountGuard {
              }}; \
              Write-Output $v.Path"
         );
-        let out = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-            .output()
+        let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
             .context("failed to run Mount-DiskImage")?;
         if !out.status.success() {
-            bail!(
-                "Fatal: Mount-DiskImage failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            bail!("Fatal: Mount-DiskImage failed: {}", tail(&out));
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
         let vol = stdout
@@ -1320,27 +1331,21 @@ impl Drop for MountGuard {
         use std::process::Command;
         #[cfg(target_os = "linux")]
         {
-            let _ = Command::new("umount").arg(&self.mount_point).status();
+            let _ = run_logged(Command::new("umount").arg(&self.mount_point));
             let _ = std::fs::remove_dir(&self.mount_point);
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = Command::new("hdiutil")
-                .args(["detach", "-force"])
-                .arg(&self.mount_point)
-                .status();
+            let _ = run_logged(Command::new("hdiutil").args(["detach", "-force"]).arg(&self.mount_point));
             let _ = std::fs::remove_dir(&self.mount_point);
         }
         #[cfg(windows)]
         {
-            // dismount echoes its DiskImage object to the inherited console otherwise
             let ps = format!(
                 "Dismount-DiskImage -ImagePath {} | Out-Null",
                 ps_quote(&self.source.to_string_lossy())
             );
-            let _ = Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
-                .status();
+            let _ = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]));
         }
         let _ = &self.mount_point; 
     }
@@ -1357,26 +1362,27 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
     use std::process::Command;
     // unmounts partitions of this device, matches /dev/sdb1 or nvme0n1p2 style suffixes not a bare prefix, a failed unmount is fatal since a new GPT under a live fs corrupts it
     let t = target.to_string_lossy().to_string();
-    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
-        for line in mounts.lines() {
-            let src = line.split_whitespace().next().unwrap_or("");
-            if is_partition_of(src, &t) {
-                let ok = Command::new("umount")
-                    .arg(src)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if !ok {
-                    bail!(
-                        "Fatal: {} is mounted and could not be unmounted (still in use? a file \
-                         manager window or open file will hold it). Close whatever is \
-                         using it and retry.",
-                        src
-                    );
-                }
-            }
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let mut unmounted = 0;
+    for line in mounts.lines() {
+        let mut f = line.split_whitespace();
+        let (src, at) = (f.next().unwrap_or(""), f.next().unwrap_or("?"));
+        if !is_partition_of(src, &t) {
+            continue;
         }
+        info!("{} is mounted at {}, unmounting", src, at);
+        let out = run_logged(Command::new("umount").arg(src)).context("failed to run umount")?;
+        if !out.status.success() {
+            bail!(
+                "Fatal: {} is mounted and could not be unmounted ({}). A file manager window or \
+                 open file will hold it, close whatever is using it and retry.",
+                src,
+                tail(&out)
+            );
+        }
+        unmounted += 1;
     }
+    info!("Unmounted {} partition(s) of {}", unmounted, t);
     Ok(PrepGuard {})
 }
 
@@ -1401,17 +1407,14 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
     if !ft.is_block_device() && !ft.is_char_device() {
         return Ok(PrepGuard {});
     }
-    let ok = Command::new("diskutil")
-        .arg("unmountDisk")
-        .arg(target)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
+    let out = run_logged(Command::new("diskutil").arg("unmountDisk").arg(target))
+        .context("failed to run diskutil")?;
+    if !out.status.success() {
         bail!(
-            "Fatal: diskutil unmountDisk {} failed; a volume on the target is still in use. \
+            "Fatal: diskutil unmountDisk {} failed ({}), a volume on the target is still in use. \
              Close whatever is using it and retry.",
-            target.display()
+            target.display(),
+            tail(&out)
         );
     }
     Ok(PrepGuard {})
@@ -1437,6 +1440,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
         let h = (0..LOCK_TRIES)
             .find_map(|i| {
                 if i > 0 {
+                    info!("Volume {} busy, lock retry {}/{}", vol, i + 1, LOCK_TRIES);
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 lock_and_dismount(&vol)
@@ -1452,9 +1456,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
         info!("Locked + dismounted volume {} on drive {}", vol, drive_no);
         locked.push(h);
     }
-    if locked.is_empty() {
-        debug!("No mounted volumes found on drive {}", drive_no);
-    }
+    info!("Locked {} volume(s) on drive {}", locked.len(), drive_no);
     Ok(PrepGuard { locked })
 }
 
@@ -1581,7 +1583,8 @@ fn lock_and_dismount(vol: &str) -> Option<File> {
     let locked = unsafe {
         DeviceIoControl(h, FSCTL_LOCK_VOLUME, None, 0, None, 0, Some(&mut returned), None)
     };
-    if locked.is_err() {
+    if let Err(e) = locked {
+        info!("FSCTL_LOCK_VOLUME on {} failed: {}", vol, e);
         return None;
     }
     let _ = unsafe {

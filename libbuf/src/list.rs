@@ -473,14 +473,7 @@ pub fn list_drives() -> Result<Vec<UsbDevice>> {
 
     info!("Enumerating disks via diskutil");
 
-    let output = Command::new("diskutil").args(["list", "-plist"]).output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Parse the AllDisksAndPartitions plist to get disk identifiers, then
-    // query each with "diskutil info -plist" for size and media type
     let mut devices = Vec::new();
-
-    // Extract disk identifiers from the simple text list output instead
     let list_out = Command::new("diskutil").arg("list").output()?;
     let list_str = String::from_utf8_lossy(&list_out.stdout);
 
@@ -625,7 +618,7 @@ pub fn print_device_table(devices: &[UsbDevice]) {
     if devices.is_empty() {
         println!("No storage devices found.");
         #[cfg(windows)]
-        println!("If a drive is plugged in, re-run with --verbose to see why each device was skipped.");
+        println!("If a drive is plugged in, re-run with --verbose --log-path list.log and check the log for why each device was skipped.");
         return;
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "libbuf"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 publish = false
 description = "Core logic library for the buf USB flasher tool"
@@ -14,7 +14,7 @@ indicatif = "0.17"
 fatfs     = "0.3"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.27", features = ["user", "process"] }
+nix = { version = "0.27", features = ["user", "process", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [
