@@ -1713,7 +1713,6 @@ fn reread_partitions(_dev: &File, _target: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     #[test]
     #[cfg(unix)]
@@ -1805,7 +1804,7 @@ mod tests {
         assert_eq!(pmbr[450], 0xEE, "protective MBR partition type");
         assert_eq!([pmbr[510], pmbr[511]], [0x55, 0xAA]);
 
-        let mut check_header = |f: &mut File, hdr_lba: u64, arr_lba: u64, my_expect: u64| {
+        let check_header = |f: &mut File, hdr_lba: u64, arr_lba: u64, my_expect: u64| {
             let sec = read_lba(f, hdr_lba);
             let h = &sec[..92];
             assert_eq!(&h[0..8], b"EFI PART");
