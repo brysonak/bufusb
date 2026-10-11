@@ -27,7 +27,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::list::human_bytes;
-use crate::logger::{run as run_logged, tail};
+use crate::logger::{reason, run as run_logged};
 use crate::say;
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1242,7 +1242,7 @@ impl MountGuard {
             .context("failed to run mount")?;
         if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: mount exited with {}: {}", out.status, tail(&out));
+            bail!("Fatal: mount exited with {}: {}", out.status, reason(&out));
         }
         Ok(Self { mount_point: mp, source: source.to_path_buf() })
     }
@@ -1263,7 +1263,7 @@ impl MountGuard {
         .context("failed to run hdiutil attach")?;
         if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: hdiutil attach exited with {}: {}", out.status, tail(&out));
+            bail!("Fatal: hdiutil attach exited with {}: {}", out.status, reason(&out));
         }
         Ok(Self { mount_point: mp, source: source.to_path_buf() })
     }
@@ -1291,7 +1291,7 @@ impl MountGuard {
         let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
             .context("failed to run Mount-DiskImage")?;
         if !out.status.success() {
-            bail!("Fatal: Mount-DiskImage failed: {}", tail(&out));
+            bail!("Fatal: Mount-DiskImage failed: {}", reason(&out));
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
         let vol = stdout
@@ -1377,7 +1377,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
                 "Fatal: {} is mounted and could not be unmounted ({}). A file manager window or \
                  open file will hold it, close whatever is using it and retry.",
                 src,
-                tail(&out)
+                reason(&out)
             );
         }
         unmounted += 1;
@@ -1414,7 +1414,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
             "Fatal: diskutil unmountDisk {} failed ({}), a volume on the target is still in use. \
              Close whatever is using it and retry.",
             target.display(),
-            tail(&out)
+            reason(&out)
         );
     }
     Ok(PrepGuard {})

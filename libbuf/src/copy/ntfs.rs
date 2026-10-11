@@ -30,7 +30,7 @@ use super::{
     resolve_symlink, write_gpt, PartSpec, Scan, ESP_TYPE, MS_BASIC_DATA,
 };
 use crate::list::human_bytes;
-use crate::logger::{run as run_logged, tail};
+use crate::logger::{reason, run as run_logged};
 use crate::say;
 
 const SECTOR: u64 = 512;
@@ -236,7 +236,7 @@ fn format_and_copy(
     let out = run_logged(Command::new("mkfs.ntfs").args(["-f", "-F", "-L", label]).arg(&part_node))
         .context("failed to run mkfs.ntfs (is ntfs-3g and ntfsprogs installed?)")?;
     if !out.status.success() {
-        bail!("mkfs.ntfs exited with {}: {}", out.status, tail(&out));
+        bail!("mkfs.ntfs exited with {}: {}", out.status, reason(&out));
     }
 
     let mount = NtfsMount::mount(&part_node)?;
@@ -305,15 +305,17 @@ impl NtfsMount {
                     info!("Mounted {} with the {} driver at {}", node.display(), fstype, mp.display());
                     return Ok(Self { mount_point: mp, mounted: true });
                 }
-                Ok(o) => errors.push(format!("{}: {}", fstype, tail(&o))),
+                Ok(o) => errors.push(format!("{}: {}", fstype, reason(&o))),
                 Err(e) => errors.push(format!("{}: {}", fstype, e)),
             }
         }
         let _ = std::fs::remove_dir(&mp);
+        let missing = errors.iter().all(|e| e.contains("unknown filesystem type") || e.contains("No such file"));
         bail!(
-            "Fatal: Could not mount {} as NTFS ({}). Is ntfs3 or ntfs-3g available?",
+            "Fatal: Could not mount {} as NTFS ({}){}",
             node.display(),
-            errors.join("; ")
+            errors.join("; "),
+            if missing { ". Install ntfs-3g, or use a kernel with the ntfs3 driver" } else { "" }
         );
     }
 
@@ -330,7 +332,7 @@ impl NtfsMount {
                  Unmount it manually before unplugging",
                 self.mount_point.display(),
                 out.status,
-                tail(&out)
+                reason(&out)
             );
         }
         Ok(())
@@ -377,7 +379,7 @@ fn format_and_copy(
     let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
         .context("failed to run Format-Volume")?;
     if !out.status.success() {
-        bail!("NTFS format failed: {}", tail(&out));
+        bail!("NTFS format failed: {}", reason(&out));
     }
     let letter = String::from_utf8_lossy(&out.stdout)
         .trim()

@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use chrono::Local;
 use fern::Dispatch;
@@ -34,7 +33,13 @@ pub fn set_bar(pb: &ProgressBar) {
 
 pub fn term(line: &str, stderr: bool) {
     let bar = BAR.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let print = || if stderr { eprintln!("{}", line) } else { println!("{}", line) };
+    let print = || {
+        if stderr {
+            eprintln!("{}", line)
+        } else {
+            println!("{}", line)
+        }
+    };
     match bar {
         Some(pb) if !pb.is_finished() => pb.suspend(print),
         _ => print(),
@@ -74,7 +79,9 @@ fn log_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     return std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Local")))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Local"))
+        })
         .map(|d| d.join("bufusb").join("logs"));
 
     #[cfg(unix)]
@@ -103,7 +110,13 @@ fn log_dir() -> Option<PathBuf> {
 }
 
 pub fn log_path() -> Option<PathBuf> {
-    Some(log_dir()?.join(Local::now().format("bufusb-%Y-%m-%dT%H-%M-%S.log").to_string()))
+    Some(
+        log_dir()?.join(
+            Local::now()
+                .format("bufusb-%Y-%m-%dT%H-%M-%S.log")
+                .to_string(),
+        ),
+    )
 }
 
 #[cfg(unix)]
@@ -126,7 +139,9 @@ fn give_back(path: &Path, first_new_dir: Option<&Path>) {
 
 fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
-    let first_new = dir.and_then(|d| d.ancestors().take_while(|a| !a.exists()).last()).map(Path::to_path_buf);
+    let first_new = dir
+        .and_then(|d| d.ancestors().take_while(|a| !a.exists()).last())
+        .map(Path::to_path_buf);
     if let Some(d) = dir {
         std::fs::create_dir_all(d)?;
     }
@@ -139,28 +154,43 @@ fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 pub fn init(enabled: bool, verbose: bool, custom_path: Option<PathBuf>) -> Option<PathBuf> {
-    let level = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+    let level = if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
 
     let stderr = Dispatch::new()
         .level(LevelFilter::Warn)
         .filter(|m| m.target() != "panic")
         .format(|out, msg, rec| {
-            let tag = if rec.level() == log::Level::Error { "error" } else { "warning" };
+            let tag = if rec.level() == log::Level::Error {
+                "error"
+            } else {
+                "warning"
+            };
             out.finish(format_args!("{}: {}", tag, msg))
         })
-        .chain(fern::Output::call(|rec| term(&rec.args().to_string(), true)));
+        .chain(fern::Output::call(|rec| {
+            term(&rec.args().to_string(), true)
+        }));
 
     let (path, file) = match enabled.then(|| custom_path.or_else(log_path)).flatten() {
-        Some(p) => match open_log(&p) {
-            Ok(f) => (Some(p), Some(f)),
-            Err(e) => {
-                term(&format!("warning: could not open log file {} ({}), logging to the terminal only", p.display(), e), true);
-                (None, None)
+        Some(p) => {
+            match open_log(&p) {
+                Ok(f) => (Some(p), Some(f)),
+                Err(e) => {
+                    term(&format!("warning: could not open log file {} ({}), logging to the terminal only", p.display(), e), true);
+                    (None, None)
+                }
             }
-        },
+        }
         None => {
             if enabled {
-                term("warning: could not determine a log directory, logging to the terminal only", true);
+                term(
+                    "warning: could not determine a log directory, logging to the terminal only",
+                    true,
+                );
             }
             (None, None)
         }
@@ -212,9 +242,19 @@ pub fn log_context() {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    info!("bufusb {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+    info!(
+        "bufusb {} ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     info!("Command: {}", cmd);
-    info!("Working directory: {}", std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|e| e.to_string()));
+    info!(
+        "Working directory: {}",
+        std::env::current_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|e| e.to_string())
+    );
     info!("Privileged: {}", crate::is_privileged());
 
     #[cfg(unix)]
@@ -254,9 +294,43 @@ pub(crate) fn run(cmd: &mut Command) -> std::io::Result<Output> {
     out
 }
 
-pub(crate) fn tail(o: &Output) -> String {
-    let s = String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr }).into_owned();
-    s.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
+pub(crate) fn reason(o: &Output) -> String {
+    let raw = if o.stderr.iter().all(u8::is_ascii_whitespace) {
+        &o.stdout
+    } else {
+        &o.stderr
+    };
+    pick_reason(&String::from_utf8_lossy(raw))
+}
+
+fn pick_reason(s: &str) -> String {
+    const HINTS: [&str; 9] = [
+        "fail",
+        "error",
+        "denied",
+        "cannot",
+        "can't",
+        "unable",
+        "invalid",
+        "not found",
+        "no such",
+    ];
+    let lines: Vec<&str> = s
+        .lines()
+        .map(str::trim)
+        .filter(|l| {
+            !l.is_empty()
+                && !l.starts_with('+')
+                && !l.starts_with("At line:")
+                && !l.starts_with("dmesg(1)")
+        })
+        .collect();
+    lines
+        .iter()
+        .rev()
+        .find(|l| HINTS.iter().any(|h| l.to_ascii_lowercase().contains(h)))
+        .or(lines.first())
+        .map_or(String::new(), |l| l.to_string())
 }
 
 #[cfg(test)]
@@ -267,18 +341,56 @@ mod tests {
     fn log_name_sorts_and_has_no_colons() {
         let p = log_path().expect("HOME or LOCALAPPDATA is set in tests");
         let name = p.file_name().unwrap().to_string_lossy();
-        assert!(name.starts_with("bufusb-20") && name.ends_with(".log") && !name.contains(':'), "{}", name);
+        assert!(
+            name.starts_with("bufusb-20") && name.ends_with(".log") && !name.contains(':'),
+            "{}",
+            name
+        );
         assert!(p.parent().unwrap().ends_with("bufusb") || p.parent().unwrap().ends_with("logs"));
     }
 
     #[test]
     #[cfg(unix)]
-    fn run_captures_output_and_tail_picks_last_line() {
-        let o = run(Command::new("sh").args(["-c", "echo out; echo first >&2; echo last >&2; exit 3"])).unwrap();
+    fn run_captures_output_and_reason_falls_back() {
+        let o =
+            run(Command::new("sh").args(["-c", "echo out; echo first >&2; echo last >&2; exit 3"]))
+                .unwrap();
         assert_eq!(o.status.code(), Some(3));
-        assert_eq!(tail(&o), "last");
+        assert_eq!(reason(&o), "first");
         let o = run(Command::new("sh").args(["-c", "echo only-stdout"])).unwrap();
-        assert_eq!(tail(&o), "only-stdout");
+        assert_eq!(reason(&o), "only-stdout");
+    }
+
+    #[test]
+    fn reason_skips_boilerplate() {
+        let ntfs3g = "ntfs_mst_post_read_fixup_warn: magic: 0x00000000  size: 1024   usa_ofs: 0  usa_count: 0: Invalid argument
+Record 0 has no FILE magic (0x0)
+Failed to mount '/dev/sda1': Input/output error
+NTFS is either inconsistent, or there is a hardware fault, or it's a
+SoftRAID/FakeRAID hardware. In the first case run chkdsk /f on Windows
+/dev/mapper/nvidia_eahaabcc1). Please see the 'dmraid' documentation
+for more details.";
+        assert_eq!(
+            pick_reason(ntfs3g),
+            "Failed to mount '/dev/sda1': Input/output error"
+        );
+
+        let ntfs3 = "mount: /tmp/x: wrong fs type, bad option, bad superblock on /dev/sda1, missing codepage or helper program, or other error.
+       dmesg(1) may have more information after failed mount system call.";
+        assert!(pick_reason(ntfs3).starts_with("mount: /tmp/x: wrong fs type"));
+
+        let ps = "Format-Volume : Access to a CIM resource was not available to the client.
+At line:1 char:72
++ ... | Format-Volume -FileSystem NTFS -NewFileSystemLabel 'X' -Confirm:$false
++       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : PermissionDenied: (MSFT_Partition:ROOT/Microsoft/Windows/Storage/MSFT_Partition) [Format-Volume], CimException
+    + FullyQualifiedErrorId : MI RESULT 2,Format-Volume";
+        assert_eq!(
+            pick_reason(ps),
+            "Format-Volume : Access to a CIM resource was not available to the client."
+        );
+
+        assert_eq!(pick_reason(""), "");
     }
 
     #[test]
