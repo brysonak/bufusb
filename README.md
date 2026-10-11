@@ -1,5 +1,5 @@
 # bufusb
-![buf logo](buf.png)
+![bufusb logo](buf.png)
 **B**ootable **U**SB **F**lasher is a tool made for flashing .iso/.img files onto USB drives, for booting into operating systems of course...
  Is it bootable USB flasher or Bryson's USB flasher?
 

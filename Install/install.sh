@@ -71,7 +71,7 @@ else
     }
     run_privileged install -m755 "target/release/$BIN" "$INSTALL_DIR/$BIN"
 fi
-printf '\nbuf installed successfully.\n'
+printf '\nbufusb installed successfully.\n'
 printf 'Executable: %s/%s\n' "$INSTALL_DIR" "$BIN"
 if command -v "$INSTALL_DIR/$BIN" >/dev/null 2>&1; then
     "$INSTALL_DIR/$BIN" --version || true
