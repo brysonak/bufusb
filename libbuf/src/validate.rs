@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Context, Result};
 use log::{debug, info, warn};
@@ -41,7 +40,10 @@ pub fn validate(params: &WriteParams) -> Result<(u64, File)> {
         bail!("Block size must be greater than zero");
     }
     if params.block_size > 256 * 1024 * 1024 {
-        bail!("Block size {} is unreasonably large (max 256 MiB)", params.block_size);
+        bail!(
+            "Block size {} is unreasonably large (max 256 MiB)",
+            params.block_size
+        );
     }
 
     if params.offset != 0 {
@@ -201,13 +203,18 @@ fn block_device_size(path: &Path) -> Result<u64> {
     let mut size: u64 = 0;
     let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), BLKGETSIZE64 as _, &mut size as *mut u64) };
     if ret == 0 {
-        debug!("BLKGETSIZE64 returned {} bytes for {}", size, path.display());
+        debug!(
+            "BLKGETSIZE64 returned {} bytes for {}",
+            size,
+            path.display()
+        );
         return Ok(size);
     }
 
     warn!(
         "BLKGETSIZE64 failed for {}: ret={}, falling back to seek",
-        path.display(), ret
+        path.display(),
+        ret
     );
     use std::io::{Seek, SeekFrom};
     let mut f = File::open(path)?;

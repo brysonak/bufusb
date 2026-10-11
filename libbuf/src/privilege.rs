@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::Result;
 use log::{debug, info};
@@ -64,7 +63,10 @@ fn unix_elevate(args: &[String]) -> Result<()> {
         Ok(v) if !v.trim().is_empty() => {
             let v = v.trim().to_string();
             if !can_exec(&v) {
-                anyhow::bail!("Fatal: BUF_SUDO is set to '{}' but that is not an executable", v);
+                anyhow::bail!(
+                    "Fatal: BUF_SUDO is set to '{}' but that is not an executable",
+                    v
+                );
             }
             info!("Escalator from BUF_SUDO: {}", v);
             v
@@ -109,7 +111,10 @@ fn can_exec(cmd: &str) -> bool {
 
     // Check PATH entries directly rather than shelling out to `which`
     std::env::var("PATH")
-        .map(|p| p.split(':').any(|d| executable(&std::path::Path::new(d).join(cmd))))
+        .map(|p| {
+            p.split(':')
+                .any(|d| executable(&std::path::Path::new(d).join(cmd)))
+        })
         .unwrap_or(false)
 }
 
@@ -150,7 +155,10 @@ fn windows_elevate(args: &[String]) -> Result<()> {
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bufusb.exe"));
     // A quote can't appear in a Windows path or a valid --label, so refuse
     if let Some(bad) = args.iter().find(|a| a.contains('"')) {
-        anyhow::bail!("Fatal: argument contains a double quote, cannot relaunch elevated: {}", bad);
+        anyhow::bail!(
+            "Fatal: argument contains a double quote, cannot relaunch elevated: {}",
+            bad
+        );
     }
     let quoted: Vec<String> = args.iter().map(|a| quote_arg(a)).collect();
     // cmd /k strips the first and last quote when the line has more than two, so wrap it all once more
@@ -183,7 +191,10 @@ fn windows_elevate(args: &[String]) -> Result<()> {
     };
     // <= 32 is failure, 5 (SE_ERR_ACCESSDENIED) is the user clicking No on the UAC prompt
     if r.0 <= 32 {
-        anyhow::bail!("Fatal: UAC elevation was declined or failed (ShellExecuteW code {})", r.0);
+        anyhow::bail!(
+            "Fatal: UAC elevation was declined or failed (ShellExecuteW code {})",
+            r.0
+        );
     }
 
     // ShellExecuteW doesn't hand back the child, the elevated window logs the rest into the same file
@@ -203,7 +214,10 @@ mod tests {
 
     #[test]
     fn quote_arg_msvcrt() {
-        assert_eq!(quote_arg(r"C:\Users\John Smith\x.iso"), r#""C:\Users\John Smith\x.iso""#);
+        assert_eq!(
+            quote_arg(r"C:\Users\John Smith\x.iso"),
+            r#""C:\Users\John Smith\x.iso""#
+        );
         assert_eq!(quote_arg(r"C:\logs\"), r#""C:\logs\\""#);
         assert_eq!(quote_arg("my usb"), r#""my usb""#);
         assert_eq!(quote_arg(r"\\.\PhysicalDrive1"), r#""\\.\PhysicalDrive1""#);

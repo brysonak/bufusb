@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Result};
 use std::fmt;
@@ -64,7 +63,7 @@ impl ImageCaps {
     pub fn sniff(path: &Path) -> Result<Self> {
         let mut f = File::open(path)?;
 
-        // MBR/VBR boot signature 
+        // MBR/VBR boot signature
         let mut boot = [0u8; 2];
         let dd_bootable = f.seek(SeekFrom::Start(510)).is_ok()
             && f.read_exact(&mut boot).is_ok()
@@ -93,7 +92,11 @@ impl ImageCaps {
             }
         }
 
-        Ok(Self { dd_bootable, is_iso, is_udf })
+        Ok(Self {
+            dd_bootable,
+            is_iso,
+            is_udf,
+        })
     }
 
     // copy mode needs a filesystem the OS can mount and we can read out of, ISO9660 or UDF
@@ -101,7 +104,6 @@ impl ImageCaps {
         self.is_iso || self.is_udf
     }
 }
-
 
 pub fn auto(caps: ImageCaps) -> Result<Mode> {
     if caps.dd_bootable {
@@ -129,7 +131,11 @@ mod tests {
     use super::*;
 
     fn caps(dd: bool, iso: bool, udf: bool) -> ImageCaps {
-        ImageCaps { dd_bootable: dd, is_iso: iso, is_udf: udf }
+        ImageCaps {
+            dd_bootable: dd,
+            is_iso: iso,
+            is_udf: udf,
+        }
     }
 
     #[test]
