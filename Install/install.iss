@@ -1,4 +1,4 @@
-#define BufAppVersion "0.2.6"
+#define BufAppVersion "0.3.0"
 #ifndef Arch
   #define Arch "x64"
 #endif
