@@ -133,6 +133,9 @@ struct Cli {
         help = "Enable verbose debug logging"
     )]
     verbose: bool,
+
+    #[arg(long = "relaunched", hide = true, action = ArgAction::SetTrue)]
+    relaunched: bool,
 }
 
 fn main() {
@@ -151,7 +154,8 @@ fn main() {
 
     let file_logging = !cli.no_logging && (!cli.list || custom_log_path.is_some());
     let log_path = libbuf::init_logger(file_logging, cli.verbose, custom_log_path);
-    if let Some(ref path) = log_path {
+    // the parent already printed this path to the same terminal
+    if let (Some(path), false) = (&log_path, cli.relaunched) {
         println!("Logging to: {}", path.display());
     }
     libbuf::logger::log_context();
@@ -258,6 +262,8 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
         if cli.verbose {
             argv.push("--verbose".to_string());
         }
+        #[cfg(unix)]
+        argv.push("--relaunched".to_string());
         libbuf::elevate_or_warn(&argv)?;
     }
 
