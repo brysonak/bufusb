@@ -41,8 +41,8 @@ struct Cli {
     )]
     source: Option<String>,
 
-    // I cannot stress enough, I *fucking* HATE the way windows does drive naming...
-    // `\\.\PhysicalDriveN`.... What a stupid convention
+    // I cannot stress enough, I HATE the way windows does drive naming...
+    // `\\.\PhysicalDriveN`.... What a stupid naming convention
     #[arg(
         short = 't',
         long = "target",
@@ -159,6 +159,7 @@ fn main() {
     match result {
         Ok(()) => info!("Finished OK after {:.1?}", start.elapsed()),
         Err(e) => {
+            libbuf::logger::abandon_bar();
             error!("{:#}", e);
             info!("Failed after {:.1?}", start.elapsed());
             if let Some(p) = log_path {

@@ -31,6 +31,18 @@ pub fn set_bar(pb: &ProgressBar) {
     *BAR.lock().unwrap_or_else(|e| e.into_inner()) = Some(pb.clone());
 }
 
+// On failure, freeze an unfinished bar where it stopped
+pub fn abandon_bar() {
+    if let Some(pb) = BAR.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if !pb.is_finished() {
+            pb.abandon();
+            if !pb.is_hidden() {
+                eprintln!();
+            }
+        }
+    }
+}
+
 pub fn term(line: &str, stderr: bool) {
     let bar = BAR.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let print = || {
@@ -336,6 +348,15 @@ fn pick_reason(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandon_bar_finishes_and_forgets_the_bar() {
+        let pb = ProgressBar::hidden();
+        set_bar(&pb);
+        abandon_bar();
+        assert!(pb.is_finished());
+        assert!(BAR.lock().unwrap().is_none());
+    }
 
     #[test]
     fn log_name_sorts_and_has_no_colons() {
