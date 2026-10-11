@@ -80,11 +80,6 @@ pub fn run(
         target,
     )?;
 
-    info!(
-        "Largest file {} is over the FAT32 limit, using the NTFS + UEFI:NTFS layout",
-        human_bytes(scan.max_file)
-    );
-
     if dry_run {
         say!(
             "\n --dry-run (copy mode, NTFS fallback): would write a GPT ({} NTFS data \

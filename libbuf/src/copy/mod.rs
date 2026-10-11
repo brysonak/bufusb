@@ -90,13 +90,6 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     let part_sectors = total_sectors - align_lba - gpt_tail;
     let part_bytes = part_sectors * sector;
     let cluster = fat32_cluster(part_bytes, sector);
-    info!(
-        "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
-        align_lba,
-        align_lba + part_sectors - 1,
-        human_bytes(part_bytes),
-        cluster
-    );
 
     // Mount the ISO
     let guard = MountGuard::mount(Path::new(source))
@@ -118,6 +111,13 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     if scan.max_file > FAT32_MAX_FILE {
         return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label);
     }
+    info!(
+        "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
+        align_lba,
+        align_lba + part_sectors - 1,
+        human_bytes(part_bytes),
+        cluster
+    );
 
     // 8 reserved sectors, 2 FATs at 4 bytes per cluster, the root dir cluster
     let fat_overhead = 8 * sector + 2 * 4 * (part_bytes / cluster) + cluster;
