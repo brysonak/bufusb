@@ -31,12 +31,14 @@ use log::{debug, error, info, warn};
     long_about = None,
     after_help = "For full documentation, please visit: https://github.com/brysonak/bufusb/blob/main/docs/docs.md",
     styles     = clap_styles(),
+    arg_required_else_help = true,
 )]
 struct Cli {
     #[arg(
         short = 's',
         long = "source",
         value_name = "FILE",
+        required_unless_present = "list",
         help = "Source ISO/IMG file to flash"
     )]
     source: Option<String>,
@@ -47,6 +49,7 @@ struct Cli {
         short = 't',
         long = "target",
         value_name = "DEVICE",
+        required_unless_present = "list",
         help = "Target block device (e.g. /dev/sdb, /dev/disk2, or \\\\.\\PhysicalDrive1)"
     )]
     target: Option<String>,
@@ -180,12 +183,12 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     let source = cli
         .source
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Fatal: --source/-s is required. Use --help for usage."))?;
+        .expect("clap requires --source unless --list");
 
     let target = cli
         .target
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Fatal: --target/-t is required. Use --help for usage."))?;
+        .expect("clap requires --target unless --list");
 
     // Parse --mode early. If the user asked for both dd and copy at once, stop before we prompt for elevation or touch the device
     let requested = parse_modes(&cli.mode)?;
