@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Parser};
@@ -25,29 +24,32 @@ use log::{debug, error, info, warn};
 #[derive(Parser, Debug)]
 #[command(
     name       = "bufusb",
-    version    = "0.2.6",
-    long_version = "0.2.6\n Copyright (C) 2026  Bryson Kelly\n    This program comes with ABSOLUTELY NO WARRANTY; for details, visit: https://github.com/brysonak/bufusb/blob/main/LICENSE\n    This is free software, and you are welcome to redistribute it\n    under certain conditions.",
+    version    = "0.3.0",
+    long_version = "0.3.0\n Copyright (C) 2026  Bryson Kelly\n    This program comes with ABSOLUTELY NO WARRANTY; for details, visit: https://github.com/brysonak/bufusb/blob/main/LICENSE\n    This is free software, and you are welcome to redistribute it\n    under certain conditions.",
     author     = "Bryson Kelly",
     about      = "A fast, safe bootable USB image flasher",
     long_about = None,
     after_help = "For full documentation, please visit: https://github.com/brysonak/bufusb/blob/main/docs/docs.md",
     styles     = clap_styles(),
+    arg_required_else_help = true,
 )]
 struct Cli {
     #[arg(
         short = 's',
         long = "source",
         value_name = "FILE",
+        required_unless_present = "list",
         help = "Source ISO/IMG file to flash"
     )]
     source: Option<String>,
 
-    // I cannot stress enough, I *fucking* HATE the way windows does drive naming...
-    // `\\.\PhysicalDriveN`.... What a stupid convention
+    // I cannot stress enough, I HATE the way windows does drive naming...
+    // `\\.\PhysicalDriveN`.... What a stupid naming convention
     #[arg(
         short = 't',
         long = "target",
         value_name = "DEVICE",
+        required_unless_present = "list",
         help = "Target block device (e.g. /dev/sdb, /dev/disk2, or \\\\.\\PhysicalDrive1)"
     )]
     target: Option<String>,
@@ -110,6 +112,13 @@ struct Cli {
     dry_run: bool,
 
     #[arg(
+        long = "no-fake-check",
+        action = ArgAction::SetTrue,
+        help = "Skip the counterfeit-drive check (writes and reads back test blocks before flashing)"
+    )]
+    no_fake_check: bool,
+
+    #[arg(
         long = "no-logging",
         short_alias = 'n',
         action = ArgAction::SetTrue,
@@ -131,6 +140,9 @@ struct Cli {
         help = "Enable verbose debug logging"
     )]
     verbose: bool,
+
+    #[arg(long = "relaunched", hide = true, action = ArgAction::SetTrue)]
+    relaunched: bool,
 }
 
 fn main() {
@@ -142,12 +154,15 @@ fn main() {
     }
 
     let custom_log_path = cli.log_path.as_deref().map(|p| {
-        std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.into())
+        std::env::current_dir()
+            .map(|d| d.join(p))
+            .unwrap_or_else(|_| p.into())
     });
 
     let file_logging = !cli.no_logging && (!cli.list || custom_log_path.is_some());
     let log_path = libbuf::init_logger(file_logging, cli.verbose, custom_log_path);
-    if let Some(ref path) = log_path {
+    // the parent already printed this path to the same terminal
+    if let (Some(path), false) = (&log_path, cli.relaunched) {
         println!("Logging to: {}", path.display());
     }
     libbuf::logger::log_context();
@@ -158,6 +173,7 @@ fn main() {
     match result {
         Ok(()) => info!("Finished OK after {:.1?}", start.elapsed()),
         Err(e) => {
+            libbuf::logger::abandon_bar();
             error!("{:#}", e);
             info!("Failed after {:.1?}", start.elapsed());
             if let Some(p) = log_path {
@@ -178,12 +194,12 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     let source = cli
         .source
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Fatal: --source/-s is required. Use --help for usage."))?;
+        .expect("clap requires --source unless --list");
 
     let target = cli
         .target
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Fatal: --target/-t is required. Use --help for usage."))?;
+        .expect("clap requires --target unless --list");
 
     // Parse --mode early. If the user asked for both dd and copy at once, stop before we prompt for elevation or touch the device
     let requested = parse_modes(&cli.mode)?;
@@ -221,8 +237,10 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     if !libbuf::is_privileged() {
         info!("Not running as root/Administrator, relaunching elevated");
         let mut argv = vec![
-            "--source".to_string(), source.clone(),
-            "--target".to_string(), target.clone(),
+            "--source".to_string(),
+            source.clone(),
+            "--target".to_string(),
+            target.clone(),
         ];
         for m in &cli.mode {
             argv.extend(["--mode".to_string(), m.clone()]);
@@ -239,10 +257,23 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
         if let Some(ref l) = cli.label {
             argv.extend(["--label".to_string(), l.clone()]);
         }
-        if cli.force      { argv.push("--force".to_string()); }
-        if cli.dry_run    { argv.push("--dry-run".to_string()); }
-        if cli.no_logging { argv.push("--no-logging".to_string()); }
-        if cli.verbose    { argv.push("--verbose".to_string()); }
+        if cli.force {
+            argv.push("--force".to_string());
+        }
+        if cli.dry_run {
+            argv.push("--dry-run".to_string());
+        }
+        if cli.no_fake_check {
+            argv.push("--no-fake-check".to_string());
+        }
+        if cli.no_logging {
+            argv.push("--no-logging".to_string());
+        }
+        if cli.verbose {
+            argv.push("--verbose".to_string());
+        }
+        #[cfg(unix)]
+        argv.push("--relaunched".to_string());
         libbuf::elevate_or_warn(&argv)?;
     }
 
@@ -259,7 +290,10 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     let mode = match requested {
         Some(m) => {
             let risky = libbuf::mode::mode_risky(m, caps);
-            info!("Write mode: {} (forced with --mode, mismatched with image: {})", m, risky);
+            info!(
+                "Write mode: {} (forced with --mode, mismatched with image: {})",
+                m, risky
+            );
             if risky && !cli.force {
                 confirm_risky_mode()?;
             }
@@ -286,7 +320,10 @@ fn log_target_device(target: &str) {
                 "Target device: {} | {} | {} ({} bytes) | removable={}",
                 d.path, d.model, d.size_human, d.size_bytes, d.removable
             ),
-            None => info!("Target {} is not in the drive list (image file, or a filtered device)", target),
+            None => info!(
+                "Target {} is not in the drive list (image file, or a filtered device)",
+                target
+            ),
         },
         Err(e) => info!("Could not enumerate drives to describe the target: {:#}", e),
     }
@@ -311,6 +348,7 @@ fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
         target: target.to_string(),
         block_size,
         offset: cli.offset,
+        fake_check: !cli.no_fake_check,
     };
 
     say!("\n  Validating source and target...");
@@ -325,7 +363,11 @@ fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
     if !cli.force {
         confirm(source, target, source_size)?;
     } else {
-        say!("\n  --force: skipping confirmation, {} -> {}", source, target);
+        say!(
+            "\n  --force: skipping confirmation, {} -> {}",
+            source,
+            target
+        );
     }
 
     say!("\n  Writing {} -> {}...\n", source, target);
@@ -352,22 +394,35 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
         irrelevant.push("--block-size");
     }
     if !irrelevant.is_empty() {
-        warn!("{} not usable in copy mode, ignoring", irrelevant.join(", "));
+        warn!(
+            "{} not usable in copy mode, ignoring",
+            irrelevant.join(", ")
+        );
     }
 
     if cli.dry_run {
-        return libbuf::copy::run(source, target, true, cli.label.as_deref());
+        return libbuf::copy::run(source, target, true, cli.label.as_deref(), false);
     }
 
     if !cli.force {
         let iso_len = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
         confirm(source, target, iso_len)?;
     } else {
-        say!("\n  --force: skipping confirmation, copy {} -> {}", source, target);
+        say!(
+            "\n  --force: skipping confirmation, copy {} -> {}",
+            source,
+            target
+        );
     }
 
     say!("\n  Copying {} -> {} (ISO mode)...\n", source, target);
-    libbuf::copy::run(source, target, false, cli.label.as_deref())
+    libbuf::copy::run(
+        source,
+        target,
+        false,
+        cli.label.as_deref(),
+        !cli.no_fake_check,
+    )
 }
 
 fn parse_modes(raw: &[String]) -> Result<Vec<Mode>> {

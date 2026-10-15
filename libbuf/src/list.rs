@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::Result;
 use log::{debug, info};
@@ -148,8 +147,8 @@ pub fn list_drives() -> Result<Vec<UsbDevice>> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
         SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
-        SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
-        SPDRP_FRIENDLYNAME, SPDRP_PHYSICAL_DEVICE_OBJECT_NAME, SP_DEVICE_INTERFACE_DATA,
+        SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SPDRP_FRIENDLYNAME,
+        SPDRP_PHYSICAL_DEVICE_OBJECT_NAME, SP_DEVICE_INTERFACE_DATA,
         SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA,
     };
     use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -325,7 +324,11 @@ pub fn list_drives() -> Result<Vec<UsbDevice>> {
             )
         };
 
-        let size_bytes = if geom_ok.is_ok() { geom.DiskSize as u64 } else { 0 };
+        let size_bytes = if geom_ok.is_ok() {
+            geom.DiskSize as u64
+        } else {
+            0
+        };
 
         if size_bytes == 0 {
             continue;
@@ -404,9 +407,7 @@ fn query_device_descriptor(handle: windows::Win32::Foundation::HANDLE) -> (bool,
         )
     };
 
-    if ok.is_err()
-        || bytes_returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32
-    {
+    if ok.is_err() || bytes_returned < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() as u32 {
         return (false, 0);
     }
 
@@ -464,7 +465,12 @@ fn query_registry_string(
         .take_while(|&c| c != 0)
         .collect();
 
-    Some(OsString::from_wide(&wide).to_string_lossy().trim().to_string())
+    Some(
+        OsString::from_wide(&wide)
+            .to_string_lossy()
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -622,26 +628,53 @@ pub fn print_device_table(devices: &[UsbDevice]) {
         return;
     }
 
-    let col_path = devices.iter().map(|d| d.path.len()).max().unwrap_or(4).max(6);
-    let col_size = devices.iter().map(|d| d.size_human.len()).max().unwrap_or(4).max(8);
-    let col_model = devices.iter().map(|d| d.model.len()).max().unwrap_or(5).max(5);
+    let col_path = devices
+        .iter()
+        .map(|d| d.path.len())
+        .max()
+        .unwrap_or(4)
+        .max(6);
+    let col_size = devices
+        .iter()
+        .map(|d| d.size_human.len())
+        .max()
+        .unwrap_or(4)
+        .max(8);
+    let col_model = devices
+        .iter()
+        .map(|d| d.model.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
 
     println!(
         "\n  {:<path$}  {:<size$}  {:<model$}",
-        "DEVICE", "SIZE", "MODEL",
-        path = col_path, size = col_size, model = col_model,
+        "DEVICE",
+        "SIZE",
+        "MODEL",
+        path = col_path,
+        size = col_size,
+        model = col_model,
     );
     println!(
         "  {:-<path$}  {:-<size$}  {:-<model$}",
-        "", "", "",
-        path = col_path, size = col_size, model = col_model,
+        "",
+        "",
+        "",
+        path = col_path,
+        size = col_size,
+        model = col_model,
     );
 
     for d in devices {
         println!(
             "  {:<path$}  {:<size$}  {:<model$}",
-            d.path, d.size_human, d.model,
-            path = col_path, size = col_size, model = col_model,
+            d.path,
+            d.size_human,
+            d.model,
+            path = col_path,
+            size = col_size,
+            model = col_model,
         );
     }
     println!();

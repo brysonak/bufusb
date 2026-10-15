@@ -136,7 +136,35 @@ Checks performed:
 - Copy mode: the ISO's files fit on the target after filesystem overhead
 
 Nothing is written to the target. The target file is opened for writing as part
-of the access check and then immediately closed.
+of the access check and then immediately closed. Because of that, `--dry-run` does
+not run the counterfeit-drive check below.
+
+### `--no-fake-check`
+
+Skip the counterfeit-drive check.
+
+```sh
+bufusb -s image.iso -t /dev/sdb --no-fake-check
+```
+
+Counterfeit USB drives report a large size (e.g. 32 GB) but only store a fraction of
+it. Anything written past the real size is lost or overwrites the beginning, which
+shows up later as a drive that won't boot or a filesystem that can't be mounted.
+
+Before writing, bufusb writes 33 unique test blocks spread over the part of the drive
+the flash will use, reads them back, and refuses to continue if any came back wrong:
+
+```
+error: Fatal: /dev/sdb looks counterfeit. It claims 29.30 GiB but only stores
+somewhere between 3.66 GiB and 4.58 GiB of it.
+```
+
+The drive is about to be overwritten, so the test blocks don't matter cost wise. In dd mode only the range the image will occupy is checked, so a
+small image still flashes onto a fake drive whose real part is big enough. Copy mode
+uses the whole drive, so the whole drive is checked. Image files are never checked.
+
+The check catches the common counterfeit types. For a thorough test of a drive,
+use [f3probe](https://github.com/AltraMayor/f3).
 
 ### `-n, --no-logging`
 

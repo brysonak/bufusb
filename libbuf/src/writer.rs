@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -29,8 +28,12 @@ use crate::list::human_bytes;
 use crate::validate::WriteParams;
 
 pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Result<()> {
-    // source, target, block size and offset were already logged 
-    info!("Beginning write of {} bytes ({})", source_size, human_bytes(source_size));
+    // source, target, block size and offset were already logged
+    info!(
+        "Beginning write of {} bytes ({})",
+        source_size,
+        human_bytes(source_size)
+    );
 
     let source_path = Path::new(&params.source);
 
@@ -47,11 +50,23 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     let sector_size = get_sector_size(Path::new(&params.target));
     info!("Sector size for {}: {} bytes", params.target, sector_size);
 
+    // only the range this flash writes
+    if params.fake_check {
+        crate::fakecheck::check(
+            Path::new(&params.target),
+            params.offset,
+            params.offset + source_size,
+        )?;
+    }
+
     // block_size is already validated to be non-zero. Round it up to a sector boundary
     // so that all full blocks are already aligned, and only the final partial block
-    // needs extra handling 
+    // needs extra handling
     let aligned_block = round_up(params.block_size, sector_size);
-    info!("Write block: {} bytes ({} requested), direct I/O", aligned_block, params.block_size);
+    info!(
+        "Write block: {} bytes ({} requested), direct I/O",
+        aligned_block, params.block_size
+    );
 
     let mut target = DirectWriter::new(target_file, sector_size);
 
@@ -60,7 +75,10 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
         target
             .seek(SeekFrom::Start(params.offset))
             .with_context(|| {
-                format!("Failed to seek to offset {} on {}", params.offset, params.target)
+                format!(
+                    "Failed to seek to offset {} on {}",
+                    params.offset, params.target
+                )
             })?;
     }
 
@@ -89,12 +107,14 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
             buffer.zero_range(bytes_read, write_len);
         }
 
-        target.write_all(buffer.as_slice_n(write_len)).with_context(|| {
-            format!(
-                "Write error to target at byte {}, device may be full or disconnected",
-                params.offset + bytes_written
-            )
-        })?;
+        target
+            .write_all(buffer.as_slice_n(write_len))
+            .with_context(|| {
+                format!(
+                    "Write error to target at byte {}, device may be full or disconnected",
+                    params.offset + bytes_written
+                )
+            })?;
 
         bytes_written += bytes_read as u64;
         blocks_written += 1;
@@ -114,14 +134,22 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
             next_mark = (bytes_written / step + 1) * step;
         }
     }
-    debug!("EOF after {} blocks, {} bytes", blocks_written, bytes_written);
+    debug!(
+        "EOF after {} blocks, {} bytes",
+        blocks_written, bytes_written
+    );
     if bytes_written != source_size {
-        warn!("Wrote {} bytes but the source was {} bytes at validation, did it change?", bytes_written, source_size);
+        warn!(
+            "Wrote {} bytes but the source was {} bytes at validation, did it change?",
+            bytes_written, source_size
+        );
     }
 
     pb.set_message("Syncing...");
     let sync_start = Instant::now();
-    target.sync().context("Sync error, data may not have reached the device")?;
+    target
+        .sync()
+        .context("Sync error, data may not have reached the device")?;
     info!("Sync took {:.2?}", sync_start.elapsed());
     pb.finish_with_message("Done");
 
@@ -137,12 +165,15 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
         blocks_written,
     );
 
-    crate::logger::term(&format!(
-        "\n  Written : {}\n  Time    : {:.2}s\n  Speed   : {}/s\n",
-        human_bytes(bytes_written),
-        elapsed_secs,
-        human_bytes(throughput as u64),
-    ), false);
+    crate::logger::term(
+        &format!(
+            "\n  Written : {}\n  Time    : {:.2}s\n  Speed   : {}/s\n",
+            human_bytes(bytes_written),
+            elapsed_secs,
+            human_bytes(throughput as u64),
+        ),
+        false,
+    );
 
     Ok(())
 }
@@ -154,7 +185,7 @@ fn round_up(n: usize, align: usize) -> usize {
 // AlignedBuffer wraps a heap allocation that is guaranteed to start on a
 // `align`-byte boundary. O_DIRECT and FILE_FLAG_NO_BUFFERING require that
 // the user-space buffer address is aligned to the physical sector size
-struct AlignedBuffer {
+pub(crate) struct AlignedBuffer {
     // We allocate extra capacity (align - 1 bytes) and offset into it so the
     // first usable byte is aligned. `ptr` points to the first aligned byte
     _storage: Vec<u8>,
@@ -165,16 +196,20 @@ struct AlignedBuffer {
 unsafe impl Send for AlignedBuffer {}
 
 impl AlignedBuffer {
-    fn new(capacity: usize, align: usize) -> Self {
+    pub(crate) fn new(capacity: usize, align: usize) -> Self {
         let total = capacity + align;
         let mut storage = vec![0u8; total];
         let raw = storage.as_mut_ptr();
         let offset = raw.align_offset(align);
         let ptr = unsafe { raw.add(offset) };
-        Self { _storage: storage, ptr, capacity }
+        Self {
+            _storage: storage,
+            ptr,
+            capacity,
+        }
     }
 
-    fn as_mut_slice_n(&mut self, n: usize) -> &mut [u8] {
+    pub(crate) fn as_mut_slice_n(&mut self, n: usize) -> &mut [u8] {
         assert!(n <= self.capacity);
         unsafe { std::slice::from_raw_parts_mut(self.ptr, n) }
     }
@@ -246,9 +281,8 @@ pub(crate) fn get_sector_size(path: &Path) -> usize {
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Ioctl::{
-        PropertyStandardQuery, StorageAccessAlignmentProperty,
-        IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR,
-        STORAGE_PROPERTY_QUERY,
+        PropertyStandardQuery, StorageAccessAlignmentProperty, IOCTL_STORAGE_QUERY_PROPERTY,
+        STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
     };
     use windows::Win32::System::IO::DeviceIoControl;
 
@@ -349,7 +383,10 @@ mod tests {
     #[test]
     fn read_full_fills_across_short_reads_and_eintr() {
         let data: Vec<u8> = (0..20).collect();
-        let mut r = Trickle { data: &data, interrupted: false };
+        let mut r = Trickle {
+            data: &data,
+            interrupted: false,
+        };
         let mut buf = [0u8; 8];
         assert_eq!(read_full(&mut r, &mut buf).unwrap(), 8);
         assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7]);

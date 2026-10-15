@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Context, Result};
 use fatfs::{Dir, FatType, FileSystem, FormatVolumeOptions, FsOptions, ReadWriteSeek};
@@ -27,7 +26,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::list::human_bytes;
-use crate::logger::{run as run_logged, tail};
+use crate::logger::{reason, run as run_logged};
 use crate::say;
 
 #[cfg(any(target_os = "linux", windows))]
@@ -38,29 +37,49 @@ const ISO_SECTOR: u64 = 2048; // https://wiki.osdev.org/ISO_9660#Sector_size
 const COPY_CHUNK: usize = 4 * 1024 * 1024; // big enough that fatfs allocates long cluster runs per call, see stream_copy
 const CACHE_BYTES: usize = 32 * 1024 * 1024; // SectorCache's cap, covers a typical stick's whole FAT so it never spills mid write
 
-pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Result<()> {
+pub fn run(
+    source: &str,
+    target: &str,
+    dry_run: bool,
+    label: Option<&str>,
+    fake_check: bool,
+) -> Result<()> {
     let (mut label, explicit_label) = resolve_label(label, Path::new(source));
     info!(
         "Volume label: '{}' ({})",
         label,
-        if explicit_label { "from --label" } else { "from the ISO, or the BUF default" }
+        if explicit_label {
+            "from --label"
+        } else {
+            "from the ISO, or the BUF default"
+        }
     );
     let target_path = Path::new(target);
     let sector = logical_sector_size(target_path);
     if !sector.is_power_of_two() || !(512..=4096).contains(&sector) {
-        bail!("Fatal: Unsupported logical sector size {} on {}", sector, target);
+        bail!(
+            "Fatal: Unsupported logical sector size {} on {}",
+            sector,
+            target
+        );
     }
     info!("Logical sector size: {} bytes", sector);
 
     let dev_bytes = crate::device_size(target_path)
         .with_context(|| format!("Could not determine size of target {}", target))?;
     if dev_bytes == 0 {
-        bail!("Fatal: Could not determine size of target device {}", target);
+        bail!(
+            "Fatal: Could not determine size of target device {}",
+            target
+        );
     }
     let total_sectors = dev_bytes / sector;
-    info!("Target size: {} bytes, {} sectors", dev_bytes, total_sectors);
+    info!(
+        "Target size: {} bytes, {} sectors",
+        dev_bytes, total_sectors
+    );
 
-    // 1 MiB partition 
+    // 1 MiB partition
     let align_lba = (1024 * 1024) / sector;
     // GPT entry array is 128 entries x 128 bytes = 16 KiB, however many
     // sectors that takes on this device
@@ -69,18 +88,14 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
 
     // FAT32 is not valid below 33 MiB (roughly) of clusters, need a comfortable floor
     if total_sectors <= align_lba + gpt_tail + (64 * 1024 * 1024) / sector {
-        bail!("Fatal: Target {} is too small for a FAT32 partition", target);
+        bail!(
+            "Fatal: Target {} is too small for a FAT32 partition",
+            target
+        );
     }
     let part_sectors = total_sectors - align_lba - gpt_tail;
     let part_bytes = part_sectors * sector;
     let cluster = fat32_cluster(part_bytes, sector);
-    info!(
-        "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
-        align_lba,
-        align_lba + part_sectors - 1,
-        human_bytes(part_bytes),
-        cluster
-    );
 
     // Mount the ISO
     let guard = MountGuard::mount(Path::new(source))
@@ -100,8 +115,15 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     );
 
     if scan.max_file > FAT32_MAX_FILE {
-        return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label);
+        return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label, fake_check);
     }
+    info!(
+        "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
+        align_lba,
+        align_lba + part_sectors - 1,
+        human_bytes(part_bytes),
+        cluster
+    );
 
     // 8 reserved sectors, 2 FATs at 4 bytes per cluster, the root dir cluster
     let fat_overhead = 8 * sector + 2 * 4 * (part_bytes / cluster) + cluster;
@@ -112,7 +134,9 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     )?;
 
     if label.len() > 11 {
-        let short = String::from_utf8_lossy(&fat_label(&label)).trim_end().to_string();
+        let short = String::from_utf8_lossy(&fat_label(&label))
+            .trim_end()
+            .to_string();
         if explicit_label {
             warn!("FAT32 labels are 11 characters, using '{}'", short);
         } else {
@@ -142,18 +166,31 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     // target's volumes locked and dismounted so the raw writes aren't rejected,
     // elsewhere it is useless
     let prep = prepare_target(target_path)?;
+    // copy mode lays the GPT and filesystem over the whole drive, so the whole drive must be real
+    if fake_check {
+        crate::fakecheck::check(target_path, 0, dev_bytes)?;
+    }
     let mut dev = open_target_buffered(target_path)
         .with_context(|| format!("Could not open target {} for writing", target))?;
 
-    info!("Writing GPT: protective MBR + 1 FAT32 data partition, first usable LBA {}", align_lba);
+    info!(
+        "Writing GPT: protective MBR + 1 FAT32 data partition, first usable LBA {}",
+        align_lba
+    );
 
     let mut io = SectorCache::new(&mut dev, sector);
 
-    write_gpt(&mut io, total_sectors, align_lba, sector, &[PartSpec {
-        name: &label,
-        type_guid: MS_BASIC_DATA,
-        sectors: part_sectors,
-    }])
+    write_gpt(
+        &mut io,
+        total_sectors,
+        align_lba,
+        sector,
+        &[PartSpec {
+            name: &label,
+            type_guid: MS_BASIC_DATA,
+            sectors: part_sectors,
+        }],
+    )
     .context("Failed to write GPT")?;
 
     let pb = build_bar(scan.total_bytes);
@@ -192,10 +229,14 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
             .map_err(|e| anyhow::anyhow!("FAT32 flush/unmount failed: {}", e))?;
 
         if skipped > 0 {
-            say!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
+            say!(
+                "note: {} file(s) could not be read from the ISO and were skipped",
+                skipped
+            );
         }
     }
-    io.flush().context("Flushing cached sectors to the device failed")?;
+    io.flush()
+        .context("Flushing cached sectors to the device failed")?;
     // release the cache's borrow of dev before we touch dev directly
     drop(io);
     pb.finish_with_message("Copied");
@@ -257,7 +298,6 @@ fn ensure_fits(needed: u64, avail: u64, target: &str) -> Result<()> {
     Ok(())
 }
 
-
 fn oversized_file_fallback(
     source: &str,
     target: &str,
@@ -265,12 +305,13 @@ fn oversized_file_fallback(
     mroot: &Path,
     scan: &Scan,
     label: &str,
+    fake_check: bool,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (source, target, dry_run, mroot, scan, label);
+        let _ = (source, target, dry_run, mroot, scan, label, fake_check);
         // Due to Microshit, any disk image dealing with NTFS on mac will fail because A): I couldn't find a library that lets me write to NTFS from rust
-        // and B): The driver that apple has built-in is read-only. Linux has mkfs.ntfs and windows has Format-Volume with powershell, sorry... I'll make something for the future to fix this. 
+        // and B): The driver that apple has built-in is read-only. Linux has mkfs.ntfs and windows has Format-Volume with powershell, sorry... I'll make something for the future to fix this.
         bail!(
             "Fatal: ISO contains a file larger than 4 GiB ({}). FAT32 cannot store it, and \
              macOS has no native NTFS write support",
@@ -284,12 +325,12 @@ fn oversized_file_fallback(
             "Largest file {} exceeds the FAT32 4 GiB-1 cap, falling back to NTFS + UEFI:NTFS",
             human_bytes(scan.max_file)
         );
-        return ntfs::run(source, target, dry_run, label, mroot, scan);
+        return ntfs::run(source, target, dry_run, label, mroot, scan, fake_check);
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (source, target, dry_run, mroot, label);
+        let _ = (source, target, dry_run, mroot, label, fake_check);
         bail!(
             "Fatal: ISO contains a file larger than 4 GiB ({}). FAT32 cannot store it, and \
              the NTFS fallback is only implemented for Linux and Windows.",
@@ -397,8 +438,10 @@ fn copy_tree<T: ReadWriteSeek>(mroot: &Path, fs: &FileSystem<T>, pb: &ProgressBa
                 Err(_) => continue,
             };
             let rel = p.strip_prefix(mroot).unwrap();
-            let comps: Vec<String> =
-                rel.iter().map(|c| c.to_string_lossy().into_owned()).collect();
+            let comps: Vec<String> = rel
+                .iter()
+                .map(|c| c.to_string_lossy().into_owned())
+                .collect();
             if comps.is_empty() {
                 continue;
             }
@@ -520,9 +563,7 @@ fn eltorito_efi_image(iso: &mut File) -> Result<Option<u64>> {
     if iso.seek(SeekFrom::Start(17 * ISO_SECTOR)).is_err() || iso.read_exact(&mut brvd).is_err() {
         return Ok(None);
     }
-    if brvd[0] != 0
-        || &brvd[1..6] != b"CD001"
-        || !brvd[7..].starts_with(b"EL TORITO SPECIFICATION")
+    if brvd[0] != 0 || &brvd[1..6] != b"CD001" || !brvd[7..].starts_with(b"EL TORITO SPECIFICATION")
     {
         return Ok(None);
     }
@@ -569,7 +610,10 @@ fn extract_eltorito_into_fat<T: ReadWriteSeek>(
         Some(o) => o,
         None => return Ok(false),
     };
-    info!("Extracting El-Torito EFI boot image at byte offset {}", offset);
+    info!(
+        "Extracting El-Torito EFI boot image at byte offset {}",
+        offset
+    );
 
     let len = iso.metadata()?.len().saturating_sub(offset);
     let part = Partition::new(&mut iso, offset, len);
@@ -590,7 +634,11 @@ fn extract_eltorito_into_fat<T: ReadWriteSeek>(
         stream_copy(src, &mut dst, &mut buf, pb)
             .map_err(|e| anyhow::anyhow!("extract {}: {}", comps.join("/"), e))?;
         found_boot |= is_efi_boot_comps(comps);
-        info!("extracted {} ({} bytes) from the El-Torito image", comps.join("/"), len);
+        info!(
+            "extracted {} ({} bytes) from the El-Torito image",
+            comps.join("/"),
+            len
+        );
         Ok(())
     })?;
     Ok(found_boot)
@@ -604,7 +652,10 @@ fn extract_eltorito_into_dir(source: &Path, dst_root: &Path, pb: &ProgressBar) -
         Some(o) => o,
         None => return Ok(false),
     };
-    info!("Extracting El-Torito EFI boot image at byte offset {}", offset);
+    info!(
+        "Extracting El-Torito EFI boot image at byte offset {}",
+        offset
+    );
 
     let len = iso.metadata()?.len().saturating_sub(offset);
     let part = Partition::new(&mut iso, offset, len);
@@ -627,7 +678,11 @@ fn extract_eltorito_into_dir(source: &Path, dst_root: &Path, pb: &ProgressBar) -
         stream_copy(src, &mut dst, &mut buf, pb)
             .map_err(|e| anyhow::anyhow!("extract {}: {}", comps.join("/"), e))?;
         found_boot |= is_efi_boot_comps(comps);
-        info!("extracted {} ({} bytes) from the El-Torito image", comps.join("/"), len);
+        info!(
+            "extracted {} ({} bytes) from the El-Torito image",
+            comps.join("/"),
+            len
+        );
         Ok(())
     })?;
     Ok(found_boot)
@@ -647,7 +702,7 @@ fn build_bar(total: u64) -> ProgressBar {
     pb
 }
 
-// The FAT32 ESP type GUID 
+// The FAT32 ESP type GUID
 const ESP_TYPE: [u8; 16] = guid_le([
     0xC1, 0x2A, 0x73, 0x28, 0xF8, 0x1F, 0x11, 0xD2, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B,
 ]);
@@ -656,7 +711,6 @@ const ESP_TYPE: [u8; 16] = guid_le([
 const MS_BASIC_DATA: [u8; 16] = guid_le([
     0xEB, 0xD0, 0xA0, 0xA2, 0xB9, 0xE5, 0x44, 0x33, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
 ]);
-
 
 struct PartSpec<'a> {
     name: &'a str,
@@ -712,7 +766,13 @@ fn iso_volume_label(path: &Path) -> Option<String> {
     }
     let s = pvd[0x28..0x48]
         .iter()
-        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '_' })
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string();
@@ -769,7 +829,7 @@ fn write_gpt<D: Write + Seek>(
         );
     }
 
-    // partition entry array 
+    // partition entry array
     let mut array = vec![0u8; (ENTRY_SIZE * ENTRY_COUNT) as usize];
     for (i, (spec, (start, end))) in parts.iter().zip(placements.iter()).enumerate() {
         let e = &mut array[i * 128..i * 128 + 128];
@@ -789,7 +849,7 @@ fn write_gpt<D: Write + Seek>(
     let build_header = |my_lba: u64, alt_lba: u64, arr_lba: u64| -> [u8; 92] {
         let mut h = [0u8; 92];
         h[0..8].copy_from_slice(b"EFI PART");
-        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes()); 
+        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
         h[12..16].copy_from_slice(&92u32.to_le_bytes()); // header size
         h[24..32].copy_from_slice(&my_lba.to_le_bytes());
         h[32..40].copy_from_slice(&alt_lba.to_le_bytes());
@@ -897,7 +957,12 @@ struct Partition<'a, D: Read + Write + Seek> {
 
 impl<'a, D: Read + Write + Seek> Partition<'a, D> {
     fn new(dev: &'a mut D, base: u64, len: u64) -> Self {
-        Self { dev, base, len, pos: 0 }
+        Self {
+            dev,
+            base,
+            len,
+            pos: 0,
+        }
     }
 }
 
@@ -1153,7 +1218,8 @@ pub(crate) fn logical_sector_size(path: &Path) -> u64 {
         Err(_) => return 512,
     };
     let mut size: u32 = 0;
-    let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), DKIOCGETBLOCKSIZE as _, &mut size as *mut _) };
+    let ret =
+        unsafe { nix::libc::ioctl(f.as_raw_fd(), DKIOCGETBLOCKSIZE as _, &mut size as *mut _) };
     if ret == 0 && size > 0 {
         size as u64
     } else {
@@ -1219,7 +1285,6 @@ pub(crate) fn logical_sector_size(_path: &Path) -> u64 {
     512
 }
 
-
 pub struct MountGuard {
     mount_point: PathBuf,
     #[allow(dead_code)]
@@ -1238,13 +1303,21 @@ impl MountGuard {
         use std::process::Command;
         let mp = unique_mountpoint();
         std::fs::create_dir_all(&mp)?;
-        let out = run_logged(Command::new("mount").args(["-o", "loop,ro"]).arg(source).arg(&mp))
-            .context("failed to run mount")?;
+        let out = run_logged(
+            Command::new("mount")
+                .args(["-o", "loop,ro"])
+                .arg(source)
+                .arg(&mp),
+        )
+        .context("failed to run mount")?;
         if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: mount exited with {}: {}", out.status, tail(&out));
+            bail!("Fatal: mount exited with {}: {}", out.status, reason(&out));
         }
-        Ok(Self { mount_point: mp, source: source.to_path_buf() })
+        Ok(Self {
+            mount_point: mp,
+            source: source.to_path_buf(),
+        })
     }
 }
 
@@ -1263,9 +1336,16 @@ impl MountGuard {
         .context("failed to run hdiutil attach")?;
         if !out.status.success() {
             let _ = std::fs::remove_dir(&mp);
-            bail!("Fatal: hdiutil attach exited with {}: {}", out.status, tail(&out));
+            bail!(
+                "Fatal: hdiutil attach exited with {}: {}",
+                out.status,
+                reason(&out)
+            );
         }
-        Ok(Self { mount_point: mp, source: source.to_path_buf() })
+        Ok(Self {
+            mount_point: mp,
+            source: source.to_path_buf(),
+        })
     }
 }
 
@@ -1288,10 +1368,15 @@ impl MountGuard {
              }}; \
              Write-Output $v.Path"
         );
-        let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
-            .context("failed to run Mount-DiskImage")?;
+        let out = run_logged(Command::new("powershell").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &ps,
+        ]))
+        .context("failed to run Mount-DiskImage")?;
         if !out.status.success() {
-            bail!("Fatal: Mount-DiskImage failed: {}", tail(&out));
+            bail!("Fatal: Mount-DiskImage failed: {}", reason(&out));
         }
         let stdout = String::from_utf8_lossy(&out.stdout);
         let vol = stdout
@@ -1299,7 +1384,10 @@ impl MountGuard {
             .map(str::trim)
             .find(|l| l.starts_with(r"\\?\Volume{"))
             .ok_or_else(|| anyhow::anyhow!("could not determine the mounted volume path"))?;
-        Ok(Self { mount_point: PathBuf::from(vol), source: source.to_path_buf() })
+        Ok(Self {
+            mount_point: PathBuf::from(vol),
+            source: source.to_path_buf(),
+        })
     }
 }
 
@@ -1336,7 +1424,11 @@ impl Drop for MountGuard {
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = run_logged(Command::new("hdiutil").args(["detach", "-force"]).arg(&self.mount_point));
+            let _ = run_logged(
+                Command::new("hdiutil")
+                    .args(["detach", "-force"])
+                    .arg(&self.mount_point),
+            );
             let _ = std::fs::remove_dir(&self.mount_point);
         }
         #[cfg(windows)]
@@ -1345,12 +1437,16 @@ impl Drop for MountGuard {
                 "Dismount-DiskImage -ImagePath {} | Out-Null",
                 ps_quote(&self.source.to_string_lossy())
             );
-            let _ = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]));
+            let _ = run_logged(Command::new("powershell").args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &ps,
+            ]));
         }
-        let _ = &self.mount_point; 
+        let _ = &self.mount_point;
     }
 }
-
 
 pub(crate) struct PrepGuard {
     #[cfg(windows)]
@@ -1377,7 +1473,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
                 "Fatal: {} is mounted and could not be unmounted ({}). A file manager window or \
                  open file will hold it, close whatever is using it and retry.",
                 src,
-                tail(&out)
+                reason(&out)
             );
         }
         unmounted += 1;
@@ -1414,7 +1510,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
             "Fatal: diskutil unmountDisk {} failed ({}), a volume on the target is still in use. \
              Close whatever is using it and retry.",
             target.display(),
-            tail(&out)
+            reason(&out)
         );
     }
     Ok(PrepGuard {})
@@ -1425,7 +1521,10 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
     let drive_no = match physical_drive_number(target) {
         Some(n) => n,
         None => {
-            warn!("Could not parse PhysicalDrive number from {}", target.display());
+            warn!(
+                "Could not parse PhysicalDrive number from {}",
+                target.display()
+            );
             return Ok(PrepGuard { locked: Vec::new() });
         }
     };
@@ -1476,9 +1575,7 @@ fn physical_drive_number(target: &Path) -> Option<u32> {
 fn enumerate_volumes() -> Vec<String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, MAX_PATH};
-    use windows::Win32::Storage::FileSystem::{
-        FindFirstVolumeW, FindNextVolumeW, FindVolumeClose,
-    };
+    use windows::Win32::Storage::FileSystem::{FindFirstVolumeW, FindNextVolumeW, FindVolumeClose};
 
     let mut out = Vec::new();
     let mut buf = [0u16; MAX_PATH as usize];
@@ -1546,9 +1643,7 @@ fn open_volume(vol: &str) -> Option<File> {
 fn volume_drive_number(vol: &str) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Ioctl::{
-        IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
-    };
+    use windows::Win32::System::Ioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER};
     use windows::Win32::System::IO::DeviceIoControl;
 
     let f = open_volume(vol)?;
@@ -1581,14 +1676,32 @@ fn lock_and_dismount(vol: &str) -> Option<File> {
     let mut returned = 0u32;
 
     let locked = unsafe {
-        DeviceIoControl(h, FSCTL_LOCK_VOLUME, None, 0, None, 0, Some(&mut returned), None)
+        DeviceIoControl(
+            h,
+            FSCTL_LOCK_VOLUME,
+            None,
+            0,
+            None,
+            0,
+            Some(&mut returned),
+            None,
+        )
     };
     if let Err(e) = locked {
         info!("FSCTL_LOCK_VOLUME on {} failed: {}", vol, e);
         return None;
     }
     let _ = unsafe {
-        DeviceIoControl(h, FSCTL_DISMOUNT_VOLUME, None, 0, None, 0, Some(&mut returned), None)
+        DeviceIoControl(
+            h,
+            FSCTL_DISMOUNT_VOLUME,
+            None,
+            0,
+            None,
+            0,
+            Some(&mut returned),
+            None,
+        )
     };
     Some(f)
 }
@@ -1600,12 +1713,7 @@ fn open_target_buffered(path: &Path) -> Result<File> {
         .read(true)
         .write(true)
         .open(path)
-        .with_context(|| {
-            format!(
-                "Cannot open {} (are you running as root?)",
-                path.display()
-            )
-        })?)
+        .with_context(|| format!("Cannot open {} (are you running as root?)", path.display()))?)
 }
 
 #[cfg(windows)]
@@ -1713,15 +1821,13 @@ fn reread_partitions(_dev: &File, _target: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     #[test]
     #[cfg(unix)]
     fn symlink_loop_is_detected_not_followed() {
-       // Regression check for self referential symlinks
+        // Regression check for self referential symlinks
         use std::os::unix::fs::symlink;
-        let base = std::env::temp_dir()
-            .join(format!("buf-symlink-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("buf-symlink-test-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         symlink(&base, base.join("loop")).unwrap(); // points at its own parent
 
@@ -1731,8 +1837,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let ft = entry.file_type().unwrap();
-        assert!(ft.is_symlink() && !ft.is_dir(), "sanity: symlink's raw type isn't dir");
-        assert!(entry.path().metadata().unwrap().is_dir(), "target is a dir, must be skipped not recursed");
+        assert!(
+            ft.is_symlink() && !ft.is_dir(),
+            "sanity: symlink's raw type isn't dir"
+        );
+        assert!(
+            entry.path().metadata().unwrap().is_dir(),
+            "target is a dir, must be skipped not recursed"
+        );
 
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -1772,8 +1884,11 @@ mod tests {
         let array_sectors = (16384 + sector - 1) / sector;
         let part_sectors = total_sectors - part_start - array_sectors - 1;
 
-        let path = std::env::temp_dir()
-            .join(format!("buf-gpt-test-{}-{}.img", std::process::id(), sector));
+        let path = std::env::temp_dir().join(format!(
+            "buf-gpt-test-{}-{}.img",
+            std::process::id(),
+            sector
+        ));
         {
             let mut f = File::create(&path).unwrap();
             f.set_len(total_sectors * sector).unwrap();
@@ -1781,12 +1896,22 @@ mod tests {
             f.seek(SeekFrom::Start(0x8001)).unwrap();
             f.write_all(b"CD001").unwrap();
         }
-        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        write_gpt(&mut f, total_sectors, part_start, sector, &[PartSpec {
-            name: "BUF",
-            type_guid: ESP_TYPE,
-            sectors: part_sectors,
-        }])
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        write_gpt(
+            &mut f,
+            total_sectors,
+            part_start,
+            sector,
+            &[PartSpec {
+                name: "BUF",
+                type_guid: ESP_TYPE,
+                sectors: part_sectors,
+            }],
+        )
         .unwrap();
 
         let read_lba = |f: &mut File, lba: u64| -> Vec<u8> {
@@ -1799,13 +1924,16 @@ mod tests {
         let mut old_pvd = [0u8; 5];
         f.seek(SeekFrom::Start(0x8001)).unwrap();
         f.read_exact(&mut old_pvd).unwrap();
-        assert_eq!(old_pvd, [0; 5], "stale ISO signature before the partition was not wiped");
+        assert_eq!(
+            old_pvd, [0; 5],
+            "stale ISO signature before the partition was not wiped"
+        );
 
         let pmbr = read_lba(&mut f, 0);
         assert_eq!(pmbr[450], 0xEE, "protective MBR partition type");
         assert_eq!([pmbr[510], pmbr[511]], [0x55, 0xAA]);
 
-        let mut check_header = |f: &mut File, hdr_lba: u64, arr_lba: u64, my_expect: u64| {
+        let check_header = |f: &mut File, hdr_lba: u64, arr_lba: u64, my_expect: u64| {
             let sec = read_lba(f, hdr_lba);
             let h = &sec[..92];
             assert_eq!(&h[0..8], b"EFI PART");
@@ -1820,7 +1948,10 @@ mod tests {
             f.read_exact(&mut arr).unwrap();
             assert_eq!(crc32(&arr), arr_crc, "array CRC at LBA {}", arr_lba);
             assert_eq!(&arr[0..16], &ESP_TYPE);
-            assert_eq!(u64::from_le_bytes(arr[32..40].try_into().unwrap()), part_start);
+            assert_eq!(
+                u64::from_le_bytes(arr[32..40].try_into().unwrap()),
+                part_start
+            );
             assert_eq!(
                 u64::from_le_bytes(arr[40..48].try_into().unwrap()),
                 part_start + part_sectors - 1
@@ -1843,7 +1974,10 @@ mod tests {
     #[test]
     fn ps_quote_escapes_all_single_quote_forms() {
         assert_eq!(ps_quote(r"C:\isos\arch.iso"), r"'C:\isos\arch.iso'");
-        assert_eq!(ps_quote(r"C:\Users\O'Brien\x.iso"), r"'C:\Users\O''Brien\x.iso'");
+        assert_eq!(
+            ps_quote(r"C:\Users\O'Brien\x.iso"),
+            r"'C:\Users\O''Brien\x.iso'"
+        );
         assert_eq!(ps_quote("a\u{2019}b"), "'a\u{2019}\u{2019}b'");
         assert_eq!(ps_quote("'; rm C:\\ #"), "'''; rm C:\\ #'");
     }
@@ -1854,7 +1988,10 @@ mod tests {
         assert_eq!(&fat_label("ARCH_202608")[..], b"ARCH_202608");
         assert_eq!(&fat_label("way too long a label")[..], b"WAY TOO LON");
 
-        assert_eq!(sanitize_label("Ubuntu 24.04'; rm -rf"), "Ubuntu 24_04__ rm -rf");
+        assert_eq!(
+            sanitize_label("Ubuntu 24.04'; rm -rf"),
+            "Ubuntu 24_04__ rm -rf"
+        );
         assert_eq!(sanitize_label("  ***  "), "___");
 
         // a file with no ISO9660 PVD falls through to the default
@@ -1862,11 +1999,17 @@ mod tests {
         File::create(&empty).unwrap().set_len(1 << 16).unwrap();
         assert_eq!(iso_volume_label(&empty), None);
         assert_eq!(resolve_label(None, &empty), ("BUF".to_string(), false));
-        assert_eq!(resolve_label(Some("MYSTICK"), &empty), ("MYSTICK".to_string(), true));
+        assert_eq!(
+            resolve_label(Some("MYSTICK"), &empty),
+            ("MYSTICK".to_string(), true)
+        );
 
         // now stamp a minimal PVD in and check we read the identifier back
         {
-            let mut f = std::fs::OpenOptions::new().write(true).open(&empty).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&empty)
+                .unwrap();
             f.seek(SeekFrom::Start(16 * ISO_SECTOR)).unwrap();
             let mut pvd = [b' '; 0x48];
             pvd[0] = 1;
@@ -1875,8 +2018,14 @@ mod tests {
             f.write_all(&pvd).unwrap();
         }
         assert_eq!(iso_volume_label(&empty).as_deref(), Some("ARCH_202608"));
-        assert_eq!(resolve_label(None, &empty), ("ARCH_202608".to_string(), false));
-        assert_eq!(resolve_label(Some("MYSTICK"), &empty), ("MYSTICK".to_string(), true));
+        assert_eq!(
+            resolve_label(None, &empty),
+            ("ARCH_202608".to_string(), false)
+        );
+        assert_eq!(
+            resolve_label(Some("MYSTICK"), &empty),
+            ("MYSTICK".to_string(), true)
+        );
 
         let _ = std::fs::remove_file(&empty);
     }
@@ -1931,8 +2080,7 @@ mod tests {
     fn sector_cache_roundtrips() {
         let sector = 512u64;
         let size = (sector as usize) * 256;
-        let path = std::env::temp_dir()
-            .join(format!("buf-cache-test-{}.img", std::process::id()));
+        let path = std::env::temp_dir().join(format!("buf-cache-test-{}.img", std::process::id()));
         {
             let f = File::create(&path).unwrap();
             f.set_len(size as u64).unwrap();
@@ -1948,7 +2096,11 @@ mod tests {
             state % m
         };
 
-        let mut dev = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut dev = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         {
             let mut c = SectorCache::new(&mut dev, sector);
             for i in 0..600 {

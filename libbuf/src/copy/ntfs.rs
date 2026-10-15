@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Context, Result};
 use indicatif::ProgressBar;
@@ -30,7 +29,7 @@ use super::{
     resolve_symlink, write_gpt, PartSpec, Scan, ESP_TYPE, MS_BASIC_DATA,
 };
 use crate::list::human_bytes;
-use crate::logger::{run as run_logged, tail};
+use crate::logger::{reason, run as run_logged};
 use crate::say;
 
 const SECTOR: u64 = 512;
@@ -43,7 +42,15 @@ const GPT_TAIL: u64 = 33;
 // reason to allow a smaller NTFS data partition than we'd allow a FAT32 one
 const MIN_DATA_SECTORS: u64 = 64 * 1024 * 1024 / SECTOR;
 
-pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path, scan: &Scan,) -> Result<()> {
+pub fn run(
+    source: &str,
+    target: &str,
+    dry_run: bool,
+    label: &str,
+    mroot: &Path,
+    scan: &Scan,
+    fake_check: bool,
+) -> Result<()> {
     let target_path = Path::new(target);
     let dev_bytes = crate::device_size(target_path)
         .with_context(|| format!("Could not determine size of target {}", target))?;
@@ -54,7 +61,10 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     let loader_sectors = round_up_sectors(LOADER_IMG.len() as u64, SECTOR);
 
     if total_sectors <= ALIGN_LBA + GPT_TAIL + loader_sectors + MIN_DATA_SECTORS {
-        bail!("Target {} is too small for an NTFS + UEFI:NTFS layout", target);
+        bail!(
+            "Target {} is too small for an NTFS + UEFI:NTFS layout",
+            target
+        );
     }
     let ntfs_sectors = total_sectors - ALIGN_LBA - GPT_TAIL - loader_sectors;
     info!(
@@ -70,8 +80,6 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
         ntfs_sectors * SECTOR,
         target,
     )?;
-
-    info!("Largest file {} is over the FAT32 limit, using the NTFS + UEFI:NTFS layout", human_bytes(scan.max_file));
 
     if dry_run {
         say!(
@@ -90,6 +98,9 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     }
 
     let prep = prepare_target(target_path)?;
+    if fake_check {
+        crate::fakecheck::check(target_path, 0, dev_bytes)?;
+    }
     let mut dev = open_target_buffered(target_path)
         .with_context(|| format!("Could not open target {} for writing", target))?;
 
@@ -104,10 +115,24 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
 
     let mut io = super::SectorCache::new(&mut dev, SECTOR);
 
-    let placements = write_gpt(&mut io, total_sectors, ALIGN_LBA, SECTOR, &[
-        PartSpec { name: label, type_guid: MS_BASIC_DATA, sectors: ntfs_sectors },
-        PartSpec { name: "UEFI_NTFS", type_guid: ESP_TYPE, sectors: loader_sectors },
-    ])
+    let placements = write_gpt(
+        &mut io,
+        total_sectors,
+        ALIGN_LBA,
+        SECTOR,
+        &[
+            PartSpec {
+                name: label,
+                type_guid: MS_BASIC_DATA,
+                sectors: ntfs_sectors,
+            },
+            PartSpec {
+                name: "UEFI_NTFS",
+                type_guid: ESP_TYPE,
+                sectors: loader_sectors,
+            },
+        ],
+    )
     .context("Failed to write GPT")?;
     let (loader_start, _) = placements[1];
 
@@ -117,7 +142,8 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     io.flush()?;
     drop(io);
 
-    dev.sync_data().context("Sync of GPT + loader to device failed")?;
+    dev.sync_data()
+        .context("Sync of GPT + loader to device failed")?;
     info!("GPT and UEFI:NTFS loader written at LBA {}", loader_start);
     drop(prep);
     let reread = reread_partitions(&dev, target_path);
@@ -133,11 +159,20 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: &str, mroot: &Path,
     }
 
     let pb = build_bar(scan.total_bytes);
-    let (skipped, extracted_boot) =
-        format_and_copy(target_path, mroot, Path::new(source), !scan.has_efi_boot, &pb, label)?;
+    let (skipped, extracted_boot) = format_and_copy(
+        target_path,
+        mroot,
+        Path::new(source),
+        !scan.has_efi_boot,
+        &pb,
+        label,
+    )?;
 
     if skipped > 0 {
-        say!("note: {} file(s) could not be read from the ISO and were skipped", skipped);
+        say!(
+            "note: {} file(s) could not be read from the ISO and were skipped",
+            skipped
+        );
     }
     if extracted_boot {
         say!("note: EFI bootloader extracted from the ISO's El-Torito boot image");
@@ -233,10 +268,14 @@ fn format_and_copy(
     let part_node = partition_node(target, 1);
     wait_for_node(&part_node)?;
 
-    let out = run_logged(Command::new("mkfs.ntfs").args(["-f", "-F", "-L", label]).arg(&part_node))
-        .context("failed to run mkfs.ntfs (is ntfs-3g and ntfsprogs installed?)")?;
+    let out = run_logged(
+        Command::new("mkfs.ntfs")
+            .args(["-f", "-F", "-L", label])
+            .arg(&part_node),
+    )
+    .context("failed to run mkfs.ntfs (is ntfs-3g and ntfsprogs installed?)")?;
     if !out.status.success() {
-        bail!("mkfs.ntfs exited with {}: {}", out.status, tail(&out));
+        bail!("mkfs.ntfs exited with {}: {}", out.status, reason(&out));
     }
 
     let mount = NtfsMount::mount(&part_node)?;
@@ -261,7 +300,16 @@ fn format_and_copy(
 #[cfg(target_os = "linux")]
 fn partition_node(disk: &Path, index: u32) -> PathBuf {
     let s = disk.to_string_lossy();
-    let sep = if s.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) { "p" } else { "" };
+    let sep = if s
+        .chars()
+        .last()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        "p"
+    } else {
+        ""
+    };
     PathBuf::from(format!("{}{}{}", s, sep, index))
 }
 
@@ -274,7 +322,10 @@ fn wait_for_node(node: &Path) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(125));
     }
-    bail!("Partition node {} did not appear after writing the GPT", node.display());
+    bail!(
+        "Partition node {} did not appear after writing the GPT",
+        node.display()
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -300,20 +351,41 @@ impl NtfsMount {
         // driver if ntfs3 isn't available on this kernel/distro
         let mut errors = Vec::new();
         for fstype in ["ntfs3", "ntfs-3g"] {
-            match run_logged(Command::new("mount").args(["-t", fstype, "-o", "rw"]).arg(node).arg(&mp)) {
+            match run_logged(
+                Command::new("mount")
+                    .args(["-t", fstype, "-o", "rw"])
+                    .arg(node)
+                    .arg(&mp),
+            ) {
                 Ok(o) if o.status.success() => {
-                    info!("Mounted {} with the {} driver at {}", node.display(), fstype, mp.display());
-                    return Ok(Self { mount_point: mp, mounted: true });
+                    info!(
+                        "Mounted {} with the {} driver at {}",
+                        node.display(),
+                        fstype,
+                        mp.display()
+                    );
+                    return Ok(Self {
+                        mount_point: mp,
+                        mounted: true,
+                    });
                 }
-                Ok(o) => errors.push(format!("{}: {}", fstype, tail(&o))),
+                Ok(o) => errors.push(format!("{}: {}", fstype, reason(&o))),
                 Err(e) => errors.push(format!("{}: {}", fstype, e)),
             }
         }
         let _ = std::fs::remove_dir(&mp);
+        let missing = errors
+            .iter()
+            .all(|e| e.contains("unknown filesystem type") || e.contains("No such file"));
         bail!(
-            "Fatal: Could not mount {} as NTFS ({}). Is ntfs3 or ntfs-3g available?",
+            "Fatal: Could not mount {} as NTFS ({}){}",
             node.display(),
-            errors.join("; ")
+            errors.join("; "),
+            if missing {
+                ". Install ntfs-3g, or use a kernel with the ntfs3 driver"
+            } else {
+                ""
+            }
         );
     }
 
@@ -323,14 +395,15 @@ impl NtfsMount {
 
     fn unmount(mut self) -> Result<()> {
         self.mounted = false;
-        let out = run_logged(Command::new("umount").arg(&self.mount_point)).context("failed to run umount")?;
+        let out = run_logged(Command::new("umount").arg(&self.mount_point))
+            .context("failed to run umount")?;
         if !out.status.success() {
             bail!(
                 "Fatal: umount {} exited with {} ({}), data may not be fully written. \
                  Unmount it manually before unplugging",
                 self.mount_point.display(),
                 out.status,
-                tail(&out)
+                reason(&out)
             );
         }
         Ok(())
@@ -356,8 +429,12 @@ fn format_and_copy(
     pb: &ProgressBar,
     label: &str,
 ) -> Result<(u64, bool)> {
-    let drive_no = super::physical_drive_number(target)
-        .ok_or_else(|| anyhow::anyhow!("Could not parse PhysicalDrive number from {}", target.display()))?;
+    let drive_no = super::physical_drive_number(target).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Could not parse PhysicalDrive number from {}",
+            target.display()
+        )
+    })?;
 
     // I hate powershell
     let ps = format!(
@@ -374,10 +451,15 @@ fn format_and_copy(
         n = drive_no,
         label = label
     );
-    let out = run_logged(Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]))
-        .context("failed to run Format-Volume")?;
+    let out = run_logged(Command::new("powershell").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &ps,
+    ]))
+    .context("failed to run Format-Volume")?;
     if !out.status.success() {
-        bail!("NTFS format failed: {}", tail(&out));
+        bail!("NTFS format failed: {}", reason(&out));
     }
     let letter = String::from_utf8_lossy(&out.stdout)
         .trim()
@@ -403,11 +485,17 @@ fn format_and_copy(
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        &format!("$ErrorActionPreference='Stop'; Write-VolumeCache -DriveLetter {}", letter),
+        &format!(
+            "$ErrorActionPreference='Stop'; Write-VolumeCache -DriveLetter {}",
+            letter
+        ),
     ]))
     .context("failed to run Write-VolumeCache")?;
     if !out.status.success() {
-        bail!("Fatal: flushing {}: failed, data may not be fully written. Eject it before unplugging", letter);
+        bail!(
+            "Fatal: flushing {}: failed, data may not be fully written. Eject it before unplugging",
+            letter
+        );
     }
 
     Ok((skipped, extracted))
@@ -428,9 +516,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn partition_node_naming() {
-        assert_eq!(partition_node(Path::new("/dev/sdb"), 1).to_str().unwrap(), "/dev/sdb1");
         assert_eq!(
-            partition_node(Path::new("/dev/nvme0n1"), 2).to_str().unwrap(),
+            partition_node(Path::new("/dev/sdb"), 1).to_str().unwrap(),
+            "/dev/sdb1"
+        );
+        assert_eq!(
+            partition_node(Path::new("/dev/nvme0n1"), 2)
+                .to_str()
+                .unwrap(),
             "/dev/nvme0n1p2"
         );
     }

@@ -1,21 +1,20 @@
 /*
-    bufusb - Tool for flashing USB drives across platforms
-    Copyright (C) 2026 Bryson Kelly
+   bufusb - Tool for flashing USB drives across platforms
+   Copyright (C) 2026 Bryson Kelly
 
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
 
 use anyhow::{bail, Context, Result};
 use log::{debug, info, warn};
@@ -28,6 +27,7 @@ pub struct WriteParams {
     pub target: String,
     pub block_size: usize,
     pub offset: u64,
+    pub fake_check: bool,
 }
 
 pub fn validate(params: &WriteParams) -> Result<(u64, File)> {
@@ -41,7 +41,10 @@ pub fn validate(params: &WriteParams) -> Result<(u64, File)> {
         bail!("Block size must be greater than zero");
     }
     if params.block_size > 256 * 1024 * 1024 {
-        bail!("Block size {} is unreasonably large (max 256 MiB)", params.block_size);
+        bail!(
+            "Block size {} is unreasonably large (max 256 MiB)",
+            params.block_size
+        );
     }
 
     if params.offset != 0 {
@@ -195,19 +198,23 @@ fn block_device_size(path: &Path) -> Result<u64> {
 
     let f = File::open(path)?;
 
-    // BLKGETSIZE64 returns device size in bytes. BLKGETSIZE returns 512-byte sector count
     const BLKGETSIZE64: u64 = 0x80081272;
 
     let mut size: u64 = 0;
     let ret = unsafe { nix::libc::ioctl(f.as_raw_fd(), BLKGETSIZE64 as _, &mut size as *mut u64) };
     if ret == 0 {
-        debug!("BLKGETSIZE64 returned {} bytes for {}", size, path.display());
+        debug!(
+            "BLKGETSIZE64 returned {} bytes for {}",
+            size,
+            path.display()
+        );
         return Ok(size);
     }
 
     warn!(
         "BLKGETSIZE64 failed for {}: ret={}, falling back to seek",
-        path.display(), ret
+        path.display(),
+        ret
     );
     use std::io::{Seek, SeekFrom};
     let mut f = File::open(path)?;
@@ -302,10 +309,10 @@ fn windows_device_size(path: &Path) -> Result<u64> {
 }
 
 #[cfg(windows)]
-fn open_target_file(path: &Path) -> anyhow::Result<File> {
+pub(crate) fn open_target_file(path: &Path) -> anyhow::Result<File> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
-    use windows::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_NO_BUFFERING, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
         FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -322,7 +329,7 @@ fn open_target_file(path: &Path) -> anyhow::Result<File> {
     let handle = unsafe {
         CreateFileW(
             windows::core::PCWSTR(wide.as_ptr()),
-            GENERIC_WRITE.0,
+            GENERIC_READ.0 | GENERIC_WRITE.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             None,
             OPEN_EXISTING,
@@ -338,10 +345,11 @@ fn open_target_file(path: &Path) -> anyhow::Result<File> {
 }
 
 #[cfg(target_os = "linux")]
-fn open_target_file(path: &Path) -> anyhow::Result<File> {
+pub(crate) fn open_target_file(path: &Path) -> anyhow::Result<File> {
     use std::fs::OpenOptions;
     use std::os::unix::fs::OpenOptionsExt;
     Ok(OpenOptions::new()
+        .read(true)
         .write(true)
         // O_DIRECT differs per arch (0x4000 on x86 is O_DIRECTORY on arm64), take it from libc
         .custom_flags(nix::libc::O_DIRECT | nix::libc::O_SYNC)
@@ -349,18 +357,18 @@ fn open_target_file(path: &Path) -> anyhow::Result<File> {
 }
 
 #[cfg(target_os = "macos")]
-fn open_target_file(path: &Path) -> anyhow::Result<File> {
+pub(crate) fn open_target_file(path: &Path) -> anyhow::Result<File> {
     use std::fs::OpenOptions;
     // F_NOCACHE is applied post-open via fcntl
-    let file = OpenOptions::new().write(true).open(path)?;
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     macos_set_nocache(&file);
     Ok(file)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn open_target_file(path: &Path) -> anyhow::Result<File> {
+pub(crate) fn open_target_file(path: &Path) -> anyhow::Result<File> {
     use std::fs::OpenOptions;
-    Ok(OpenOptions::new().write(true).open(path)?)
+    Ok(OpenOptions::new().read(true).write(true).open(path)?)
 }
 
 #[cfg(target_os = "macos")]

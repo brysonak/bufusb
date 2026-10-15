@@ -1,7 +1,7 @@
 # Maintainer: Bryson Kelly <brysonak@protonmail (dot) com>
 pkgname=bufusb-cli
 _binname=bufusb
-pkgver=0.2.6
+pkgver=0.3.0
 pkgrel=1
 _srcdir="bufusb-$pkgver"
 pkgdesc="A fast, safe bootable USB image flasher"
@@ -32,7 +32,8 @@ build() {
 check() {
     cd "$_srcdir"
     export RUSTUP_TOOLCHAIN=stable
-    cargo test --frozen --workspace
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --release --workspace
 }
 
 package() {
