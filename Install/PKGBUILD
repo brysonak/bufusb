@@ -32,7 +32,8 @@ build() {
 check() {
     cd "$_srcdir"
     export RUSTUP_TOOLCHAIN=stable
-    cargo test --frozen --workspace
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --release --workspace
 }
 
 package() {
