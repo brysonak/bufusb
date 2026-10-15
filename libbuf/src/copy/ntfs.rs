@@ -49,6 +49,7 @@ pub fn run(
     label: &str,
     mroot: &Path,
     scan: &Scan,
+    fake_check: bool,
 ) -> Result<()> {
     let target_path = Path::new(target);
     let dev_bytes = crate::device_size(target_path)
@@ -97,6 +98,9 @@ pub fn run(
     }
 
     let prep = prepare_target(target_path)?;
+    if fake_check {
+        crate::fakecheck::check(target_path, 0, dev_bytes)?;
+    }
     let mut dev = open_target_buffered(target_path)
         .with_context(|| format!("Could not open target {} for writing", target))?;
 

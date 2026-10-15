@@ -37,7 +37,13 @@ const ISO_SECTOR: u64 = 2048; // https://wiki.osdev.org/ISO_9660#Sector_size
 const COPY_CHUNK: usize = 4 * 1024 * 1024; // big enough that fatfs allocates long cluster runs per call, see stream_copy
 const CACHE_BYTES: usize = 32 * 1024 * 1024; // SectorCache's cap, covers a typical stick's whole FAT so it never spills mid write
 
-pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Result<()> {
+pub fn run(
+    source: &str,
+    target: &str,
+    dry_run: bool,
+    label: Option<&str>,
+    fake_check: bool,
+) -> Result<()> {
     let (mut label, explicit_label) = resolve_label(label, Path::new(source));
     info!(
         "Volume label: '{}' ({})",
@@ -109,7 +115,7 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     );
 
     if scan.max_file > FAT32_MAX_FILE {
-        return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label);
+        return oversized_file_fallback(source, target, dry_run, &mroot, &scan, &label, fake_check);
     }
     info!(
         "FAT32 layout: partition LBA {}..{} ({}), cluster {} bytes",
@@ -160,6 +166,10 @@ pub fn run(source: &str, target: &str, dry_run: bool, label: Option<&str>) -> Re
     // target's volumes locked and dismounted so the raw writes aren't rejected,
     // elsewhere it is useless
     let prep = prepare_target(target_path)?;
+    // copy mode lays the GPT and filesystem over the whole drive, so the whole drive must be real
+    if fake_check {
+        crate::fakecheck::check(target_path, 0, dev_bytes)?;
+    }
     let mut dev = open_target_buffered(target_path)
         .with_context(|| format!("Could not open target {} for writing", target))?;
 
@@ -295,10 +305,11 @@ fn oversized_file_fallback(
     mroot: &Path,
     scan: &Scan,
     label: &str,
+    fake_check: bool,
 ) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (source, target, dry_run, mroot, scan, label);
+        let _ = (source, target, dry_run, mroot, scan, label, fake_check);
         // Due to Microshit, any disk image dealing with NTFS on mac will fail because A): I couldn't find a library that lets me write to NTFS from rust
         // and B): The driver that apple has built-in is read-only. Linux has mkfs.ntfs and windows has Format-Volume with powershell, sorry... I'll make something for the future to fix this.
         bail!(
@@ -314,12 +325,12 @@ fn oversized_file_fallback(
             "Largest file {} exceeds the FAT32 4 GiB-1 cap, falling back to NTFS + UEFI:NTFS",
             human_bytes(scan.max_file)
         );
-        return ntfs::run(source, target, dry_run, label, mroot, scan);
+        return ntfs::run(source, target, dry_run, label, mroot, scan, fake_check);
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (source, target, dry_run, mroot, label);
+        let _ = (source, target, dry_run, mroot, label, fake_check);
         bail!(
             "Fatal: ISO contains a file larger than 4 GiB ({}). FAT32 cannot store it, and \
              the NTFS fallback is only implemented for Linux and Windows.",

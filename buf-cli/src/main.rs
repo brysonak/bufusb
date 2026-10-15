@@ -112,6 +112,13 @@ struct Cli {
     dry_run: bool,
 
     #[arg(
+        long = "no-fake-check",
+        action = ArgAction::SetTrue,
+        help = "Skip the counterfeit-drive check (writes and reads back test blocks before flashing)"
+    )]
+    no_fake_check: bool,
+
+    #[arg(
         long = "no-logging",
         short_alias = 'n',
         action = ArgAction::SetTrue,
@@ -256,6 +263,9 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
         if cli.dry_run {
             argv.push("--dry-run".to_string());
         }
+        if cli.no_fake_check {
+            argv.push("--no-fake-check".to_string());
+        }
         if cli.no_logging {
             argv.push("--no-logging".to_string());
         }
@@ -338,6 +348,7 @@ fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
         target: target.to_string(),
         block_size,
         offset: cli.offset,
+        fake_check: !cli.no_fake_check,
     };
 
     say!("\n  Validating source and target...");
@@ -390,7 +401,7 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
     }
 
     if cli.dry_run {
-        return libbuf::copy::run(source, target, true, cli.label.as_deref());
+        return libbuf::copy::run(source, target, true, cli.label.as_deref(), false);
     }
 
     if !cli.force {
@@ -405,7 +416,13 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
     }
 
     say!("\n  Copying {} -> {} (ISO mode)...\n", source, target);
-    libbuf::copy::run(source, target, false, cli.label.as_deref())
+    libbuf::copy::run(
+        source,
+        target,
+        false,
+        cli.label.as_deref(),
+        !cli.no_fake_check,
+    )
 }
 
 fn parse_modes(raw: &[String]) -> Result<Vec<Mode>> {

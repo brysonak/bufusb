@@ -50,6 +50,15 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     let sector_size = get_sector_size(Path::new(&params.target));
     info!("Sector size for {}: {} bytes", params.target, sector_size);
 
+    // only the range this flash writes
+    if params.fake_check {
+        crate::fakecheck::check(
+            Path::new(&params.target),
+            params.offset,
+            params.offset + source_size,
+        )?;
+    }
+
     // block_size is already validated to be non-zero. Round it up to a sector boundary
     // so that all full blocks are already aligned, and only the final partial block
     // needs extra handling
@@ -176,7 +185,7 @@ fn round_up(n: usize, align: usize) -> usize {
 // AlignedBuffer wraps a heap allocation that is guaranteed to start on a
 // `align`-byte boundary. O_DIRECT and FILE_FLAG_NO_BUFFERING require that
 // the user-space buffer address is aligned to the physical sector size
-struct AlignedBuffer {
+pub(crate) struct AlignedBuffer {
     // We allocate extra capacity (align - 1 bytes) and offset into it so the
     // first usable byte is aligned. `ptr` points to the first aligned byte
     _storage: Vec<u8>,
@@ -187,7 +196,7 @@ struct AlignedBuffer {
 unsafe impl Send for AlignedBuffer {}
 
 impl AlignedBuffer {
-    fn new(capacity: usize, align: usize) -> Self {
+    pub(crate) fn new(capacity: usize, align: usize) -> Self {
         let total = capacity + align;
         let mut storage = vec![0u8; total];
         let raw = storage.as_mut_ptr();
@@ -200,7 +209,7 @@ impl AlignedBuffer {
         }
     }
 
-    fn as_mut_slice_n(&mut self, n: usize) -> &mut [u8] {
+    pub(crate) fn as_mut_slice_n(&mut self, n: usize) -> &mut [u8] {
         assert!(n <= self.capacity);
         unsafe { std::slice::from_raw_parts_mut(self.ptr, n) }
     }

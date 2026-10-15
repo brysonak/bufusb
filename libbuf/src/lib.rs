@@ -17,6 +17,7 @@
 */
 
 pub mod copy;
+pub mod fakecheck;
 pub mod list;
 pub mod logger;
 pub mod mode;
