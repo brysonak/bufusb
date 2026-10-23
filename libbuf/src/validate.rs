@@ -299,6 +299,7 @@ fn windows_device_size(path: &Path) -> Result<u64> {
             None,
         )
     };
+    let _ = unsafe { windows::Win32::Foundation::CloseHandle(handle) };
 
     if ok.is_err() || geom.DiskSize <= 0 {
         warn!("IOCTL_DISK_GET_DRIVE_GEOMETRY_EX failed, skipping size check");

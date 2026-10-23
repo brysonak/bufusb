@@ -45,7 +45,7 @@ pub fn write(params: &WriteParams, source_size: u64, target_file: File) -> Resul
     // on unix a live fs writes its dirty metadata back over the image
     let _prep = crate::copy::prepare_target(Path::new(&params.target))?;
 
-    // Query physical sector size for alignment. With O_DIRECT / FILE_FLAG_NO_BUFFERING,
+    // Query logical sector size for alignment. With O_DIRECT / FILE_FLAG_NO_BUFFERING,
     // every write must be a multiple of this size in length and start on an aligned offset
     let sector_size = get_sector_size(Path::new(&params.target));
     info!("Sector size for {}: {} bytes", params.target, sector_size);
@@ -273,73 +273,8 @@ fn build_progress_bar(total_bytes: u64) -> ProgressBar {
     pb
 }
 
-#[cfg(windows)]
-pub(crate) fn get_sector_size(path: &Path) -> usize {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
-    use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
-    use windows::Win32::System::Ioctl::{
-        PropertyStandardQuery, StorageAccessAlignmentProperty, IOCTL_STORAGE_QUERY_PROPERTY,
-        STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
-    };
-    use windows::Win32::System::IO::DeviceIoControl;
-
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    let handle = unsafe {
-        CreateFileW(
-            windows::core::PCWSTR(wide.as_ptr()),
-            GENERIC_READ.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            None,
-        )
-    };
-
-    let handle = match handle {
-        Ok(h) if h != INVALID_HANDLE_VALUE => h,
-        _ => return 512,
-    };
-
-    let query = STORAGE_PROPERTY_QUERY {
-        PropertyId: StorageAccessAlignmentProperty,
-        QueryType: PropertyStandardQuery,
-        AdditionalParameters: [0],
-    };
-
-    let mut desc = STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR::default();
-    let mut bytes_returned = 0u32;
-
-    let ok = unsafe {
-        DeviceIoControl(
-            handle,
-            IOCTL_STORAGE_QUERY_PROPERTY,
-            Some(&query as *const _ as *const _),
-            std::mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32,
-            Some(&mut desc as *mut _ as *mut _),
-            std::mem::size_of::<STORAGE_ACCESS_ALIGNMENT_DESCRIPTOR>() as u32,
-            Some(&mut bytes_returned),
-            None,
-        )
-    };
-
-    if ok.is_ok() && desc.BytesPerPhysicalSector > 0 {
-        desc.BytesPerPhysicalSector as usize
-    } else {
-        512
-    }
-}
-
-// O_DIRECT needs logical sector alignment (F_NOCACHE needs none), copy mode already queries it
-#[cfg(not(windows))]
+// O_DIRECT and FILE_FLAG_NO_BUFFERING need logical sector alignment (F_NOCACHE needs none),
+// physical would reject legal offsets on 512e drives, copy mode already queries logical
 pub(crate) fn get_sector_size(path: &Path) -> usize {
     crate::copy::logical_sector_size(path) as usize
 }
