@@ -6,6 +6,7 @@ These docs serve as a guide on how to use the CLI (command-line interface)
 ```
 bufusb [OPTIONS] --source <FILE> --target <DEVICE>
 bufusb --list
+bufusb fmt --target <DEVICE> <FS> [OPTIONS]
 ```
 
 `--source` and `--target` are required for all write operations. All other flags
@@ -237,6 +238,45 @@ Print usage information and exit.
 ### `--version`
 
 Print the version and exit.
+
+## Formatting a drive (`fmt`)
+
+```sh
+bufusb fmt -t /dev/sdb fat32
+bufusb fmt -t /dev/sdb fat32 --label MYSTICK --gpt
+```
+
+Erases the target, writes a partition table with one partition spanning the drive
+(starting at 1 MiB), and formats it. The filesystem name is case-insensitive.
+
+| Filesystem | Name | Default table | Linux | macOS | Windows | Max label |
+|------------|------|---------------|-------|-------|---------|-----------|
+| FAT32 | `fat32` or `fat` | MBR | yes | yes | yes | 11 |
+| exFAT | `exfat` | MBR | yes | yes | yes | 11 |
+| NTFS | `ntfs` | GPT | `mkfs.ntfs` (ntfs-3g) | no | yes | 32 |
+| ext4 | `ext4` | GPT | `mkfs.ext4` (e2fsprogs) | no | no | 16 |
+| UDF | `udf` | GPT | `mkudffs` (udftools) | `newfs_udf` | `format.com` | 30 |
+| ReFS | `refs` | GPT | no | no | yes, where Windows allows it | 32 |
+
+FAT32 and exFAT are written by bufusb itself. The rest are made by the OS's own
+formatter once bufusb has written the partition table. If that tool is missing, or the
+filesystem can't be made on your OS, bufusb stops before touching the drive. Longer
+labels are cut to the limit with a warning.
+
+| Flag | Meaning |
+|------|---------|
+| `-t, --target <DEVICE>` | Drive to format, same naming as flashing |
+| `--label <NAME>` | Volume label, same rules as flashing, cut to the filesystem's limit above. Default: none |
+| `--gpt` / `--mbr` | Pick the partition table instead of the default. MBR tops out at 2 TiB on 512-byte-sector drives |
+| `--dry-run` | Print the layout and exit without touching the drive |
+| `--no-fake-check` | Skip the [counterfeit-drive check](#--no-fake-check) |
+
+`fmt` always asks for confirmation. Flash options (`--source`, `--mode`, ...) can't be
+combined with it. `--no-logging`, `--log-path` and `--verbose` work, but go after `fmt`:
+
+```sh
+bufusb fmt -t /dev/sdb fat32 --verbose
+```
 
 ## Logging
 

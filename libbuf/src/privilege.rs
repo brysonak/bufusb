@@ -95,7 +95,7 @@ fn unix_elevate(args: &[String]) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn can_exec(cmd: &str) -> bool {
+pub(crate) fn can_exec(cmd: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
     let executable = |p: &std::path::Path| {

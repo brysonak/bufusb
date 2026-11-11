@@ -42,7 +42,7 @@ const GPT_TAIL: u64 = 33;
 // reason to allow a smaller NTFS data partition than we'd allow a FAT32 one
 const MIN_DATA_SECTORS: u64 = 64 * 1024 * 1024 / SECTOR;
 
-pub fn run(
+pub(super) fn run(
     source: &str,
     target: &str,
     dry_run: bool,
@@ -298,7 +298,7 @@ fn format_and_copy(
 }
 
 #[cfg(target_os = "linux")]
-fn partition_node(disk: &Path, index: u32) -> PathBuf {
+pub(crate) fn partition_node(disk: &Path, index: u32) -> PathBuf {
     let s = disk.to_string_lossy();
     let sep = if s
         .chars()
@@ -315,7 +315,7 @@ fn partition_node(disk: &Path, index: u32) -> PathBuf {
 
 // BLKRRPART is synchronous-ish but udev still needs a moment to create the new device node
 #[cfg(target_os = "linux")]
-fn wait_for_node(node: &Path) -> Result<()> {
+pub(crate) fn wait_for_node(node: &Path) -> Result<()> {
     for _ in 0..40 {
         if node.exists() {
             return Ok(());

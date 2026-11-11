@@ -30,7 +30,7 @@ use crate::logger::{reason, run as run_logged};
 use crate::say;
 
 #[cfg(any(target_os = "linux", windows))]
-mod ntfs;
+pub(crate) mod ntfs;
 
 const FAT32_MAX_FILE: u64 = u32::MAX as u64; // 4 GiB - 1
 const ISO_SECTOR: u64 = 2048; // https://wiki.osdev.org/ISO_9660#Sector_size
@@ -277,7 +277,7 @@ struct Scan {
     has_efi_boot: bool,
 }
 
-fn fat32_cluster(part_bytes: u64, sector: u64) -> u64 {
+pub(crate) fn fat32_cluster(part_bytes: u64, sector: u64) -> u64 {
     let c = match part_bytes {
         b if b <= 260 << 20 => 512,
         b if b <= 8 << 30 => 4096,
@@ -708,14 +708,14 @@ const ESP_TYPE: [u8; 16] = guid_le([
 ]);
 
 // MS basic data GUID (GPT byte order), used instead of ESP so desktops don't hide the partition, firmware still boots FAT fine either way
-const MS_BASIC_DATA: [u8; 16] = guid_le([
+pub(crate) const MS_BASIC_DATA: [u8; 16] = guid_le([
     0xEB, 0xD0, 0xA0, 0xA2, 0xB9, 0xE5, 0x44, 0x33, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7,
 ]);
 
-struct PartSpec<'a> {
-    name: &'a str,
-    type_guid: [u8; 16],
-    sectors: u64,
+pub(crate) struct PartSpec<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) type_guid: [u8; 16],
+    pub(crate) sectors: u64,
 }
 
 fn resolve_label(explicit: Option<&str>, source: &Path) -> (String, bool) {
@@ -733,7 +733,7 @@ fn resolve_label(explicit: Option<&str>, source: &Path) -> (String, bool) {
 
 // The label reaches mkfs.ntfs argv and a single-quoted powershell string, so
 // anything outside this set is replaced
-fn sanitize_label(s: &str) -> String {
+pub(crate) fn sanitize_label(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ' ' {
@@ -748,7 +748,7 @@ fn sanitize_label(s: &str) -> String {
 }
 
 // FAT32's BPB label is exactly 11 bytes
-fn fat_label(label: &str) -> [u8; 11] {
+pub(crate) fn fat_label(label: &str) -> [u8; 11] {
     let mut out = [b' '; 11];
     for (slot, b) in out.iter_mut().zip(label.bytes()) {
         *slot = b.to_ascii_uppercase();
@@ -780,7 +780,7 @@ fn iso_volume_label(path: &Path) -> Option<String> {
 }
 
 // writes protective MBR plus primary/backup GPT, sector-size aware for 4Kn, returns (start_lba, end_lba) per partition
-fn write_gpt<D: Write + Seek>(
+pub(crate) fn write_gpt<D: Write + Seek>(
     dev: &mut D,
     total_sectors: u64,
     first_lba: u64,
@@ -895,7 +895,12 @@ fn write_gpt<D: Write + Seek>(
     Ok(placements)
 }
 
-fn gpt_write_at<D: Write + Seek>(dev: &mut D, lba: u64, bytes: &[u8], sector: u64) -> Result<()> {
+pub(crate) fn gpt_write_at<D: Write + Seek>(
+    dev: &mut D,
+    lba: u64,
+    bytes: &[u8],
+    sector: u64,
+) -> Result<()> {
     dev.seek(SeekFrom::Start(lba * sector))?;
     dev.write_all(bytes)?;
     Ok(())
@@ -909,7 +914,7 @@ fn pad_sector(header: &[u8], sector: u64) -> Vec<u8> {
 }
 
 // GPT GUIDs mix endianness, first 3 fields LE, last 2 BE, rearranges our RFC order input to on-disk order
-const fn guid_le(bytes: [u8; 16]) -> [u8; 16] {
+pub(crate) const fn guid_le(bytes: [u8; 16]) -> [u8; 16] {
     [
         bytes[3], bytes[2], bytes[1], bytes[0], // data1 LE
         bytes[5], bytes[4], // data2 LE
@@ -920,7 +925,7 @@ const fn guid_le(bytes: [u8; 16]) -> [u8; 16] {
 
 // RandomState's OS-seeded hasher is unpredictable enough for disk GUIDs
 // Probably switch to CSPRNG in the future...
-fn random_guid() -> [u8; 16] {
+pub(crate) fn random_guid() -> [u8; 16] {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let a = RandomState::new().build_hasher().finish();
@@ -948,7 +953,7 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 // bounded view over a sub-range of the inner IO so fatfs sees it as a standalone image
-struct Partition<'a, D: Read + Write + Seek> {
+pub(crate) struct Partition<'a, D: Read + Write + Seek> {
     dev: &'a mut D,
     base: u64,
     len: u64,
@@ -956,7 +961,7 @@ struct Partition<'a, D: Read + Write + Seek> {
 }
 
 impl<'a, D: Read + Write + Seek> Partition<'a, D> {
-    fn new(dev: &'a mut D, base: u64, len: u64) -> Self {
+    pub(crate) fn new(dev: &'a mut D, base: u64, len: u64) -> Self {
         Self {
             dev,
             base,
@@ -1021,7 +1026,7 @@ struct CachedSector {
     dirty: bool,
 }
 
-struct SectorCache<'a> {
+pub(crate) struct SectorCache<'a> {
     dev: &'a mut File,
     sector: usize,
     cap: usize, // max cached sectors before a full flush
@@ -1030,7 +1035,7 @@ struct SectorCache<'a> {
 }
 
 impl<'a> SectorCache<'a> {
-    fn new(dev: &'a mut File, sector: u64) -> Self {
+    pub(crate) fn new(dev: &'a mut File, sector: u64) -> Self {
         let sector = sector as usize;
         Self {
             dev,
@@ -1560,7 +1565,7 @@ pub(crate) fn prepare_target(target: &Path) -> Result<PrepGuard> {
 }
 
 #[cfg(windows)]
-fn physical_drive_number(target: &Path) -> Option<u32> {
+pub(crate) fn physical_drive_number(target: &Path) -> Option<u32> {
     target
         .to_string_lossy()
         .to_ascii_lowercase()
@@ -1707,7 +1712,7 @@ fn lock_and_dismount(vol: &str) -> Option<File> {
 }
 
 #[cfg(unix)]
-fn open_target_buffered(path: &Path) -> Result<File> {
+pub(crate) fn open_target_buffered(path: &Path) -> Result<File> {
     use std::fs::OpenOptions;
     Ok(OpenOptions::new()
         .read(true)
@@ -1717,7 +1722,7 @@ fn open_target_buffered(path: &Path) -> Result<File> {
 }
 
 #[cfg(windows)]
-fn open_target_buffered(path: &Path) -> Result<File> {
+pub(crate) fn open_target_buffered(path: &Path) -> Result<File> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
     use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -1752,7 +1757,7 @@ fn open_target_buffered(path: &Path) -> Result<File> {
 // desktop to show the partition, the NTFS path formats partition 1 by node and must not
 // run against the old table's extent
 #[cfg(target_os = "linux")]
-fn reread_partitions(dev: &File, _target: &Path) -> bool {
+pub(crate) fn reread_partitions(dev: &File, _target: &Path) -> bool {
     use std::os::unix::io::AsRawFd;
     // Do not trust reddit as a source for anything. Kept getting BLKRRPART errors because this constant was wong
     // FUCK REDDIT
@@ -1781,7 +1786,7 @@ fn reread_partitions(dev: &File, _target: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn reread_partitions(dev: &File, _target: &Path) -> bool {
+pub(crate) fn reread_partitions(dev: &File, _target: &Path) -> bool {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Ioctl::IOCTL_DISK_UPDATE_PROPERTIES;
@@ -1808,13 +1813,13 @@ fn reread_partitions(dev: &File, _target: &Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn reread_partitions(_dev: &File, _target: &Path) -> bool {
+pub(crate) fn reread_partitions(_dev: &File, _target: &Path) -> bool {
     // diskutil re-scans on its own once our handle closes; nothing to do
     true
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn reread_partitions(_dev: &File, _target: &Path) -> bool {
+pub(crate) fn reread_partitions(_dev: &File, _target: &Path) -> bool {
     true
 }
 

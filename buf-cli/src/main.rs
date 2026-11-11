@@ -17,7 +17,7 @@
 */
 
 use anyhow::{bail, Context, Result};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use libbuf::{say, Mode};
 use log::{debug, error, info, warn};
 
@@ -32,6 +32,8 @@ use log::{debug, error, info, warn};
     after_help = "For full documentation, please visit: https://github.com/brysonak/bufusb/blob/main/docs/docs.md",
     styles     = clap_styles(),
     arg_required_else_help = true,
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
 )]
 struct Cli {
     #[arg(
@@ -121,6 +123,7 @@ struct Cli {
     #[arg(
         long = "no-logging",
         short_alias = 'n',
+        global = true,
         action = ArgAction::SetTrue,
         help = "Disable log file creation"
     )]
@@ -129,6 +132,7 @@ struct Cli {
     #[arg(
         long = "log-path",
         value_name = "PATH",
+        global = true,
         help = "Write the log file to this path (default: a timestamped file in the per-user log directory, see docs)"
     )]
     log_path: Option<String>,
@@ -136,17 +140,91 @@ struct Cli {
     #[arg(
         short = 'v',
         long = "verbose",
+        global = true,
         action = ArgAction::SetTrue,
         help = "Enable verbose debug logging"
     )]
     verbose: bool,
 
-    #[arg(long = "relaunched", hide = true, action = ArgAction::SetTrue)]
+    #[arg(long = "relaunched", hide = true, global = true, action = ArgAction::SetTrue)]
     relaunched: bool,
+
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Erase a drive and format it with a single filesystem
+    Fmt(FmtArgs),
+}
+
+#[derive(Args, Debug)]
+struct FmtArgs {
+    #[arg(
+        short = 't',
+        long = "target",
+        value_name = "DEVICE",
+        help = "Target block device (e.g. /dev/sdb, /dev/disk2, or \\\\.\\PhysicalDrive1)"
+    )]
+    target: String,
+
+    #[arg(
+        value_name = "FS",
+        ignore_case = true,
+        value_parser = clap::builder::PossibleValuesParser::new([
+            clap::builder::PossibleValue::new("fat32").alias("fat"),
+            "exfat".into(),
+            "ntfs".into(),
+            "ext4".into(),
+            "udf".into(),
+            "refs".into(),
+        ]),
+        help = "Filesystem to create"
+    )]
+    fs: String,
+
+    #[arg(
+        long = "label",
+        value_name = "NAME",
+        help = "Volume label, cut to the filesystem's limit (11 for FAT32/exFAT)"
+    )]
+    label: Option<String>,
+
+    #[arg(
+        long = "gpt",
+        action = ArgAction::SetTrue,
+        conflicts_with = "mbr",
+        help = "Use a GPT partition table (default: MBR for FAT32/exFAT, GPT otherwise)"
+    )]
+    gpt: bool,
+
+    #[arg(long = "mbr", action = ArgAction::SetTrue, help = "Use an MBR partition table")]
+    mbr: bool,
+
+    #[arg(
+        long = "dry-run",
+        action = ArgAction::SetTrue,
+        help = "Show what would be written without touching the drive"
+    )]
+    dry_run: bool,
+
+    #[arg(
+        long = "no-fake-check",
+        action = ArgAction::SetTrue,
+        help = "Skip the counterfeit-drive check"
+    )]
+    no_fake_check: bool,
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().unwrap_or_else(|e| {
+        if e.kind() == clap::error::ErrorKind::ArgumentConflict {
+            eprint!("{}", e.render().to_string().replacen("error:", "fatal:", 1));
+            std::process::exit(2);
+        }
+        e.exit()
+    });
 
     if cli.no_logging && cli.log_path.is_some() {
         eprintln!("error: --log-path and --no-logging cannot be used together");
@@ -185,6 +263,10 @@ fn main() {
 }
 
 fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(Cmd::Fmt(ref a)) = cli.cmd {
+        return run_fmt(&cli, a, log_path);
+    }
+
     if cli.list {
         let devices = libbuf::list_drives()?;
         libbuf::print_device_table(&devices);
@@ -313,6 +395,74 @@ fn run(cli: Cli, log_path: Option<&std::path::Path>) -> Result<()> {
     }
 }
 
+fn run_fmt(cli: &Cli, a: &FmtArgs, log_path: Option<&std::path::Path>) -> Result<()> {
+    use libbuf::formatter::{self, Fs, Table};
+
+    let fs: Fs = a.fs.parse()?;
+    if let Some(ref l) = a.label {
+        validate_label(l)?;
+    }
+
+    #[cfg(unix)]
+    let target = std::fs::canonicalize(&a.target)
+        .with_context(|| format!("Could not resolve target path: {}", a.target))?
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(not(unix))]
+    let target = a.target.clone();
+    info!("fmt target: {}, filesystem: {}", target, fs);
+
+    if !libbuf::is_privileged() {
+        info!("Not running as root/Administrator, relaunching elevated");
+        let mut argv = vec![
+            "fmt".to_string(),
+            "--target".to_string(),
+            target.clone(),
+            a.fs.clone(),
+        ];
+        if let Some(ref l) = a.label {
+            argv.extend(["--label".to_string(), l.clone()]);
+        }
+        for (on, flag) in [
+            (a.gpt, "--gpt"),
+            (a.mbr, "--mbr"),
+            (a.dry_run, "--dry-run"),
+            (a.no_fake_check, "--no-fake-check"),
+            (cli.no_logging, "--no-logging"),
+            (cli.verbose, "--verbose"),
+        ] {
+            if on {
+                argv.push(flag.to_string());
+            }
+        }
+        if let Some(p) = log_path {
+            argv.extend(["--log-path".to_string(), p.to_string_lossy().into_owned()]);
+        }
+        #[cfg(unix)]
+        argv.push("--relaunched".to_string());
+        libbuf::elevate_or_warn(&argv)?;
+    }
+
+    log_target_device(&target);
+    let table = match (a.gpt, a.mbr) {
+        (true, _) => Some(Table::Gpt),
+        (_, true) => Some(Table::Mbr),
+        _ => None,
+    };
+    let plan = formatter::plan(&target, fs, table, a.label.as_deref())?;
+    say!("\n  {}", plan);
+
+    if a.dry_run {
+        say!("\n  --dry-run: nothing was written.\n");
+        return Ok(());
+    }
+    confirm(&format!(
+        "Format {} as {}? Everything on it will be erased.",
+        target, fs
+    ))?;
+    formatter::write(&plan, !a.no_fake_check)
+}
+
 fn log_target_device(target: &str) {
     match libbuf::list_drives() {
         Ok(drives) => match drives.iter().find(|d| d.path.eq_ignore_ascii_case(target)) {
@@ -361,7 +511,7 @@ fn write_dd(cli: &Cli, source: &str, target: &str) -> Result<()> {
     }
 
     if !cli.force {
-        confirm(source, target, source_size)?;
+        confirm(&flash_question(source, target, source_size))?;
     } else {
         say!(
             "\n  --force: skipping confirmation, {} -> {}",
@@ -406,7 +556,7 @@ fn write_copy(cli: &Cli, source: &str, target: &str, caps: libbuf::ImageCaps) ->
 
     if !cli.force {
         let iso_len = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
-        confirm(source, target, iso_len)?;
+        confirm(&flash_question(source, target, iso_len))?;
     } else {
         say!(
             "\n  --force: skipping confirmation, copy {} -> {}",
@@ -473,16 +623,19 @@ fn confirm_risky_mode() -> Result<()> {
     Ok(())
 }
 
-fn confirm(source: &str, target: &str, source_size: u64) -> Result<()> {
-    use libbuf::list::human_bytes;
+fn flash_question(source: &str, target: &str, source_size: u64) -> String {
+    format!(
+        "Flash {} ({}) to {}?",
+        source,
+        libbuf::list::human_bytes(source_size),
+        target
+    )
+}
+
+fn confirm(question: &str) -> Result<()> {
     use std::io::{self, Write as _};
 
-    print!(
-        "\n  Flash {} ({}) to {}? [y/N]: ",
-        source,
-        human_bytes(source_size),
-        target
-    );
+    print!("\n  {} [y/N]: ", question);
     io::stdout().flush()?;
 
     let mut input = String::new();
